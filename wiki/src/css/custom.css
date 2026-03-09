@@ -1,0 +1,27 @@
+/**
+ * GoRelay Documentation - Custom Styles
+ * Colors: cyan accent on dark background (matching GoRelay brand)
+ */
+
+:root {
+  --ifm-color-primary: #00bcd4;
+  --ifm-color-primary-dark: #00a5bb;
+  --ifm-color-primary-darker: #009caf;
+  --ifm-color-primary-darkest: #008191;
+  --ifm-color-primary-light: #00d3ed;
+  --ifm-color-primary-lighter: #00daf6;
+  --ifm-color-primary-lightest: #1aefff;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 188, 212, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #4dd0e1;
+  --ifm-color-primary-dark: #2ec7da;
+  --ifm-color-primary-darker: #26c0d3;
+  --ifm-color-primary-darkest: #1ea0af;
+  --ifm-color-primary-light: #6cd9e8;
+  --ifm-color-primary-lighter: #74dcea;
+  --ifm-color-primary-lightest: #a3e8f1;
+  --docusaurus-highlighted-code-line-bg: rgba(77, 208, 225, 0.15);
+}

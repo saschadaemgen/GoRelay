@@ -1,0 +1,41 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+gorelay
+gorelay-arm64
+
+# Docusaurus
+wiki/node_modules/
+wiki/.docusaurus/
+wiki/build/
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config with secrets
+config.yaml
+*.key
+*.pem
+*.crt
+!configs/config.example.yaml
+
+# Data
+data/
+*.db
+
+# Claude Code
+.claude/settings.json
