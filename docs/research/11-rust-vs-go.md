@@ -23,7 +23,7 @@ The answer is no.
 
 | Property | Go | Rust | Relevance for Relay |
 |---|---|---|---|
-| GC pauses | <1ms | None | Irrelevant (messaging tolerates seconds) |
+| GC pauses | &lt;1ms | None | Irrelevant (messaging tolerates seconds) |
 | Raw throughput | ~95% of Rust | 100% baseline | Negligible for 16 KB text blocks |
 | Memory usage | Higher (GC overhead) | Lower (no GC) | VPS has gigabytes, we use megabytes |
 | Startup time | ~0.4ms | ~0.2ms | Server starts once |
@@ -38,7 +38,7 @@ The 5% throughput difference between Go and Rust disappears into noise for a rel
 | Factor | Go | Rust |
 |---|---|---|
 | Clean build (medium project) | 30 - 90 seconds | 5 - 15 minutes |
-| Incremental build | <5 seconds | 10 - 60 seconds |
+| Incremental build | &lt;5 seconds | 10 - 60 seconds |
 | Learning curve | One weekend | Months (borrow checker) |
 | async networking | `go func()` - done | tokio + Pin + Send + Sync |
 | Error handling | `if err != nil` (verbose but simple) | `Result<T, E>` + `?` (elegant but complex) |

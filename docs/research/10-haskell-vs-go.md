@@ -29,7 +29,7 @@ Go's concurrent mark-and-sweep GC delivers sub-millisecond stop-the-world pauses
 
 | Metric | Haskell (GHC) | Go |
 |---|---|---|
-| GC pause (typical) | 20us - 200ms (varies by GC mode) | <1ms |
+| GC pause (typical) | 20us - 200ms (varies by GC mode) | &lt;1ms |
 | GC worst case (production) | 150 - 800ms+ | 7 - 19ms |
 | Thread initial stack | ~1 KB | 2 KB |
 | Startup time | ~1.4ms | ~0.4ms |
@@ -54,7 +54,7 @@ The practical difference is complexity. Starting a concurrent handler in Go: `go
 | Binary size (static) | 20 - 100 MB | 5 - 20 MB | 3 - 5x larger |
 | Docker image (minimal) | 15 - 100 MB | 3 - 15 MB | 3 - 10x larger |
 | Cross-compilation | Days of configuration | One environment variable | Incomparable |
-| Build toolchain install | 20+ min (ghcup + system deps) | <1 min (single binary) | 20x slower |
+| Build toolchain install | 20+ min (ghcup + system deps) | &lt;1 min (single binary) | 20x slower |
 | Developer pool | ~2% of professionals | ~13.5% of professionals | ~7x smaller |
 
 SimpleX Docker images support amd64 only. A Go equivalent trivially produces binaries for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, and windows/amd64.
