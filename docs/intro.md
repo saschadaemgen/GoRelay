@@ -41,7 +41,7 @@ The server acts as a message relay: clients push encrypted messages into queues,
 ## Project Links
 
 - **GoRelay Repository:** [github.com/saschadaemgen/GoRelay](https://github.com/saschadaemgen/GoRelay)
-- **SimpleGo Client:** [github.com/saschadaemgen/simplex_client](https://github.com/saschadaemgen/simplex_client)
+- **SimpleGo Client:** [github.com/saschadaemgen/SimpleGo](https://github.com/saschadaemgen/SimpleGo)
 - **SimpleGo Website:** [simplego.dev](https://simplego.dev)
 
 ---

@@ -195,7 +195,7 @@ Always ask which phase we are working on before starting implementation.
 - SimpleGo already speaks SMP and connects to SimpleX servers
 - GoRelay must be interoperable with SimpleGo's SMP implementation
 - The SMP protocol spec is at: github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md
-- SimpleGo's client implementation is at: C:\Espressif\projects\simplex_client
+- SimpleGo's client implementation is at: C:\Espressif\projects\SimpleGo
 
 ## Communication
 

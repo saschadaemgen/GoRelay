@@ -109,7 +109,7 @@ GoRelay is in early development (Session 1 - March 2026). The research phase is 
 
 ## Relationship to SimpleGo
 
-- **SimpleGo** (C, ESP32) = the client device - [github.com/saschadaemgen/simplex_client](https://github.com/saschadaemgen/simplex_client)
+- **SimpleGo** (C, ESP32) = the client device - [github.com/saschadaemgen/SimpleGo](https://github.com/saschadaemgen/SimpleGo)
 - **GoRelay** (Go, Linux) = the relay server - this repository
 
 Both speak the SMP protocol. GoRelay additionally speaks GRP for enhanced security between SimpleGo devices. Both are AGPL-3.0. Both are by IT and More Systems, Recklinghausen.

@@ -79,8 +79,14 @@ const config = {
               { label: 'GitHub', href: 'https://github.com/saschadaemgen/GoRelay' },
             ],
           },
+	  {
+            title: 'Legal',
+            items: [
+              { label: 'Imprint', to: '/imprint' },
+            ],
+          },
         ],
-        copyright: `Copyright ${new Date().getFullYear()} Sascha Daemgen, IT and More Systems, Recklinghausen. AGPL-3.0.`,
+        copyright: `Copyright ${new Date().getFullYear()} Sascha Dämgen, IT and More Systems, Recklinghausen. AGPL-3.0.`,
       },
       prism: {
         theme: require('prism-react-renderer').themes.github,
