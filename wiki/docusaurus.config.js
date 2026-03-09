@@ -1,19 +1,19 @@
 // @ts-check
+import {themes as prismThemes} from 'prism-react-renderer';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
-  title: 'GoRelay Documentation',
-  tagline: 'Zero-knowledge encrypted relay server for the SimpleGo ecosystem',
-  favicon: 'img/favicon.ico',
-
+  title: 'GoRelay',
+  tagline: 'Secure Dual Relay Infrastructure',
+  favicon: 'https://simplego.dev/favicon-32.png',
   url: 'https://wiki.gorelay.dev',
   baseUrl: '/',
-
   organizationName: 'saschadaemgen',
   projectName: 'GoRelay',
-
   onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'warn',
+  markdown: {
+    format: 'detect',
+  },
 
   i18n: {
     defaultLocale: 'en',
@@ -23,13 +23,13 @@ const config = {
   presets: [
     [
       'classic',
-      /** @type {import('@docusaurus/preset-classic').Options} */
       ({
         docs: {
           path: '../docs',
           sidebarPath: './sidebars.js',
-          editUrl: 'https://github.com/saschadaemgen/GoRelay/tree/main/wiki/',
+          editUrl: 'https://github.com/saschadaemgen/GoRelay/edit/main/docs/',
         },
+        blog: false,
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -37,63 +37,41 @@ const config = {
     ],
   ],
 
-  themeConfig:
-    /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
-    ({
-      navbar: {
-        title: 'GoRelay',
-        items: [
-          {
-            type: 'docSidebar',
-            sidebarId: 'docsSidebar',
-            position: 'left',
-            label: 'Documentation',
-          },
-          {
-            href: 'https://github.com/saschadaemgen/GoRelay',
-            label: 'GitHub',
-            position: 'right',
-          },
-          {
-            href: 'https://simplego.dev',
-            label: 'SimpleGo',
-            position: 'right',
-          },
-        ],
+  themeConfig: ({
+    colorMode: {
+      defaultMode: 'dark',
+      disableSwitch: true,
+      respectPrefersColorScheme: false,
+    },
+    navbar: {
+      title: '',
+      logo: {
+        alt: 'GoRelay',
+        src: 'img/logo.png',
+        href: '/docs/intro',
+        target: '_self',
       },
-      footer: {
-        style: 'dark',
-        links: [
-          {
-            title: 'Documentation',
-            items: [
-              { label: 'Getting Started', to: '/docs/intro' },
-              { label: 'GRP Protocol', to: '/docs/protocol/overview' },
-              { label: 'Research', to: '/docs/research/01-smp-server-analysis' },
-            ],
-          },
-          {
-            title: 'Ecosystem',
-            items: [
-              { label: 'SimpleGo', href: 'https://simplego.dev' },
-              { label: 'GitHub', href: 'https://github.com/saschadaemgen/GoRelay' },
-            ],
-          },
-	  {
-            title: 'Legal',
-            items: [
-              { label: 'Imprint', to: '/imprint' },
-            ],
-          },
-        ],
-        copyright: `Copyright ${new Date().getFullYear()} Sascha Dämgen, IT and More Systems, Recklinghausen. AGPL-3.0.`,
+      items: [
+        {href: 'https://simplego.dev', label: 'SimpleGo', position: 'right'},
+        {href: 'https://github.com/saschadaemgen/GoRelay', label: 'GitHub', position: 'right'},
+      ],
+    },
+    footer: {
+      style: 'dark',
+      links: [],
+    },
+    prism: {
+      theme: prismThemes.oneDark,
+      darkTheme: prismThemes.oneDark,
+      additionalLanguages: ['go', 'bash', 'powershell', 'haskell', 'yaml'],
+    },
+    docs: {
+      sidebar: {
+        hideable: true,
+        autoCollapseCategories: true,
       },
-      prism: {
-        theme: require('prism-react-renderer').themes.github,
-        darkTheme: require('prism-react-renderer').themes.dracula,
-        additionalLanguages: ['go', 'bash', 'yaml', 'haskell'],
-      },
-    }),
+    },
+  }),
 };
 
-module.exports = config;
+export default config;

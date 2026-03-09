@@ -1,3 +1,7 @@
+---
+title: Legal Notice (Impressum)
+---
+
 # Legal Notice (Impressum)
 
 Pursuant to § 5 TMG and § 18 (2) MStV
