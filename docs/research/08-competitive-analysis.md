@@ -38,7 +38,7 @@ The protocol design is genuinely innovative. The separation of sender and recipi
 
 **No active cover traffic.** Fixed-size blocks prevent size-based analysis, but timing-based analysis remains possible. No dummy message generation.
 
-**Unaudited crypto libraries.** The Haskell cryptographic libraries (cryptonite/crypton, hs-tls) have never received an independent security audit. Trail of Bits audited the SimpleX application but found a medium-severity X3DH implementation error that Haskell's type system did not catch.
+**Crypto library audit scope.** Trail of Bits audited the SimpleX application twice (2022 and 2024), including its cryptographic implementation, and found real bugs that were fixed - this is meaningful security work. However, the underlying Haskell libraries (cryptonite/crypton, hs-tls) have not had a dedicated standalone cryptographic library audit. By comparison, Go's crypto stdlib received a dedicated library-level audit plus FIPS 140-3 certification. This is a difference in audit depth, not a statement that SimpleX crypto is unreviewed.
 
 **Private Message Routing is optional.** Two-hop relay routing exists since v5.8 but is not enabled by default in all configurations.
 
@@ -202,7 +202,7 @@ GoRelay provides asynchronous message delivery (recipients can be offline) with 
 | Self-hostable | Single binary | Yes (complex) | Yes (complex) | Practically no | Yes (needs Tor) | Yes (complex) |
 | Docker image size | 5-15 MB | 15-100 MB | 500+ MB (Synapse) | N/A | ~50 MB | 50-200 MB |
 | Cross-compilation | Trivial | Very difficult | N/A | N/A | Possible | Difficult |
-| Crypto audit | Yes (Go stdlib) | App only | Partial | Yes | No | Partial |
+| Crypto audit | Stdlib (Trail of Bits) + FIPS | App (Trail of Bits) | Partial | Client (multiple) | No | Partial |
 | Groups | Via SMP clients | Via clients | Native | Native | Yes | Native |
 | Federation | Multi-server | Multi-server | Full federation | No | Tor network | Full federation |
 | Metadata on server | None | Minimal | Extensive | Minimal | None | Extensive |

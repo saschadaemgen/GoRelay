@@ -15,7 +15,7 @@ sidebar_position: 9
 
 A whitespace analysis identifies unoccupied spaces in a technology landscape - areas where user needs exist but no current solution adequately addresses them. For encrypted messaging infrastructure, this means finding security properties, deployment models, or use cases that are technically feasible but not yet implemented in any production system.
 
-This document maps the whitespace across eight dimensions and shows where GoRelay fills gaps that the existing ecosystem leaves open.
+This document maps the whitespace across seven dimensions and shows where GoRelay fills gaps that the existing ecosystem leaves open.
 
 ---
 
@@ -99,28 +99,27 @@ No database to install, no runtime to configure, no container orchestration need
 
 ---
 
-## Dimension 5: Audited Cryptography with FIPS Validation
+## Dimension 5: Stdlib-Level Audited Cryptography with FIPS Validation
 
 ### The Gap
 
-The cryptographic libraries underlying most encrypted messaging servers have never received independent security audits:
+Cryptographic audit depth varies significantly across the encrypted messaging ecosystem:
 
-- **Haskell (cryptonite/crypton, hs-tls):** No independent audit
-- **Erlang (crypto module):** Wraps OpenSSL (audited) but the Erlang bindings are not independently audited
-- **Python (cryptography):** The Python bindings are audited but rely on OpenSSL/BoringSSL
-- **Cwtch:** No audit of the Go crypto usage
+- **SimpleX:** Trail of Bits audited the full application including cryptographic usage (2022 and 2024), finding and fixing real bugs. This is genuine security work. However, the underlying Haskell libraries (cryptonite/crypton, hs-tls) have not had a dedicated standalone crypto library audit.
+- **Signal:** Multiple client-side audits covering the Signal Protocol implementation. Server-side uses standard Java TLS.
+- **Erlang (crypto module):** Wraps OpenSSL (audited) but the Erlang bindings are not independently audited.
+- **Python (cryptography):** The Python bindings are audited but rely on OpenSSL/BoringSSL.
+- **Cwtch:** No audit of the Go crypto usage.
 
-Signal's client-side cryptography has been audited multiple times, but the server-side crypto is standard Java TLS.
-
-The gap is that server operators must trust unaudited cryptographic implementations for the relay infrastructure that handles their users' encrypted traffic.
+The gap is specifically at the crypto library level - the implementations of AES, ChaCha20, X25519, ML-KEM, and other primitives that everything else builds on. Application-level audits verify correct usage of these primitives but do not verify the primitives themselves.
 
 ### GoRelay's Position
 
-Go's cryptographic standard library received a comprehensive Trail of Bits audit in 2025 - three engineers, one month, covering all major algorithms including ML-KEM. Result: one low-severity finding in a legacy module. The library is pursuing FIPS 140-3 certification (CAVP certificate A6650).
+Go's cryptographic standard library received a dedicated library-level audit by Trail of Bits in 2025 - three engineers, one month, covering all major algorithms including ML-KEM, ECDH, ECDSA, RSA, Ed25519, AES-GCM, SHA-1/2/3, HKDF, HMAC, and assembly implementations. Result: one low-severity finding in a legacy module. The library has FIPS 140-3 certification (CAVP certificate A6650).
 
 GoRelay uses exclusively the Go standard library for cryptography (plus flynn/noise for the Noise Protocol framework, which is 1,500 lines of auditable code). No OpenSSL, no FFI to C libraries, no unaudited dependencies.
 
-**Whitespace filled:** Relay server built entirely on independently audited, FIPS-track cryptographic primitives.
+**Whitespace filled:** Relay server built entirely on independently audited, FIPS-certified cryptographic primitives.
 
 ---
 
@@ -175,32 +174,6 @@ The specification is designed so that a competent developer can implement a GRP-
 
 ---
 
-## Dimension 8: Honest Security Communication
-
-### The Gap
-
-The encrypted messaging space suffers from security theater - marketing claims that do not match technical reality:
-
-- "Military-grade encryption" (meaningless - AES-256 is used by everyone)
-- "Zero-knowledge" (often used incorrectly - the server may not read messages but still logs metadata)
-- "Quantum-resistant" (often means optional PQC that 1% of users enable)
-- "No backdoors" (unfalsifiable claim without published source code and reproducible builds)
-
-Users cannot make informed decisions about their security when marketing obscures technical limitations.
-
-### GoRelay's Position
-
-GoRelay's documentation explicitly states what is protected and what is not. The threat model document identifies specific adversary capabilities and honestly describes the limitations of each defense mechanism:
-
-- Cover traffic makes timing analysis more difficult but does not provably prevent it against a global adversary
-- Two-hop routing prevents single-server metadata correlation but not both-server compromise
-- Post-quantum key exchange protects against future quantum computers but Ed25519 signatures remain classically vulnerable until GRP version 2
-- The server cannot read message content but can observe connection patterns if logging were enabled (it is disabled by default but trust in the operator is required)
-
-**Whitespace filled:** Transparent, technically honest security documentation that enables informed trust decisions.
-
----
-
 ## Combined Whitespace Map
 
 | Dimension | SimpleX | Matrix | Signal | Cwtch | GoRelay |
@@ -209,12 +182,11 @@ GoRelay's documentation explicitly states what is protected and what is not. The
 | Default two-hop | Optional | No | No | Via Tor | **Mandatory** |
 | Server cover traffic | No | No | No | Via Tor | **Yes** |
 | Single-binary deploy | Partial | No | No | Partial | **Yes** |
-| Audited crypto | No | Partial | Client only | No | **Yes (stdlib)** |
+| Audited crypto | App (Trail of Bits) | Partial | Client (multiple) | No | **Stdlib (Trail of Bits) + FIPS** |
 | IoT-ready | No | No | No | No | **Yes** |
 | Independent spec | Partial | Yes (large) | Partial | No | **Yes (compact)** |
-| Honest security docs | Good | Good | Good | Good | **Explicit** |
 
-GoRelay fills all eight whitespace dimensions. No other system fills more than three.
+GoRelay fills all seven whitespace dimensions. No other system fills more than three.
 
 ---
 
