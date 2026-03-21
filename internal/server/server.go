@@ -19,6 +19,7 @@ type Server struct {
 	config          *config.Config
 	store           queue.Store
 	subHub          *SubscriptionHub
+	certManager     *CertManager
 	connectionCount atomic.Int64
 	clientWg        sync.WaitGroup
 }
@@ -27,10 +28,20 @@ type Server struct {
 func New(cfg *config.Config) (*Server, error) {
 	store := queue.NewMemoryStore()
 
+	var cm *CertManager
+	if cfg.SMP.Enabled {
+		var err error
+		cm, err = NewCertManager(cfg.Server.DataDir)
+		if err != nil {
+			return nil, fmt.Errorf("cert manager: %w", err)
+		}
+	}
+
 	return &Server{
-		config: cfg,
-		store:  store,
-		subHub: NewSubscriptionHub(),
+		config:      cfg,
+		store:       store,
+		subHub:      NewSubscriptionHub(),
+		certManager: cm,
 	}, nil
 }
 
@@ -73,18 +84,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 // listenSMP starts the SMP listener on port 5223
 func (s *Server) listenSMP(ctx context.Context) error {
-	// TODO: load real TLS certificates
-	// For now, generate self-signed cert for development
-	cert, err := generateDevCert()
-	if err != nil {
-		return fmt.Errorf("load tls cert: %w", err)
-	}
-
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS13,
-		NextProtos:   []string{"smp/1"},
-	}
+	tlsConfig := s.certManager.TLSConfig()
 
 	listener, err := tls.Listen("tcp", s.config.SMP.Address, tlsConfig)
 	if err != nil {
@@ -92,7 +92,19 @@ func (s *Server) listenSMP(ctx context.Context) error {
 	}
 	defer listener.Close()
 
-	slog.Info("SMP listener started", "address", s.config.SMP.Address)
+	host := s.config.Server.Hostname
+	port := s.config.SMP.Address
+	// Extract port number from address like ":5223" or "0.0.0.0:5223"
+	if idx := len(port) - 1; idx >= 0 {
+		for i := len(port) - 1; i >= 0; i-- {
+			if port[i] == ':' {
+				port = port[i+1:]
+				break
+			}
+		}
+	}
+	smpURI := s.certManager.SMPURI(host, port)
+	slog.Info("SMP listener ready", "address", s.config.SMP.Address, "uri", smpURI)
 
 	go func() {
 		<-ctx.Done()
