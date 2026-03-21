@@ -73,94 +73,101 @@ internal/relay/                 Relay-to-relay forwarding (Phase 5)
 
 ## Current State
 
-The skeleton compiles and runs:
+Phase 1 is COMPLETE. The server compiles, runs, and passes 40+ tests:
 - Dual-port listener works (SMP TLS on :5223, GRP TCP on :7443)
 - Three-goroutine-per-connection model implemented
 - 16 KB block framing works (ReadBlock/WriteBlock)
-- PING/PONG handler returns PONG
-- QueueStore interface defined with in-memory implementation
-- SubscriptionHub with sync.Map implemented
-- Unit tests for block framing pass
+- SMP-compatible TLS CA chain with Ed25519 (persistent CA, rotatable online cert)
+- SMP URI with CA fingerprint printed on startup
+- SMP version handshake (min=6, max=7) with X25519 DH key exchange
+- PING/PONG integration tests verify full TLS round-trip
+- NEW command creates queues with random 24-byte IDs, idempotent
+- SUB command with Ed25519 signature verification and subscription takeover
+- KEY command sets one-time sender key
+- SEND command verifies sender signature, stores and delivers messages
+- MSG delivery one-at-a-time with ACK before next
+- ACK with cryptographic deletion, triggers next message delivery
+- DeliveryAttempts counter with MaxDeliveryAttempts=5 (redelivery loop protection)
+- BadgerDB v4 persistent store with per-message AES-256-GCM encryption
+- Native TTL (48h default, 7d hard max) with GC every 5 minutes
+- QueueStore interface with both MemoryStore (tests) and BadgerStore (production)
+- 40+ tests passing including 13 integration tests
 
-## Phase 1 Implementation Plan (Current)
+## Phase 1 Implementation Plan (COMPLETE)
 
-Complete these tasks IN ORDER on separate feature branches:
+All 9 tasks completed on separate feature branches, squash-merged to main:
 
-### Task 1: go mod tidy
-- Run `go mod tidy` to generate go.sum
-- Branch: chore/go-mod-tidy
-- Commit: `chore(deps): generate go.sum with go mod tidy`
+### Task 1: go mod tidy - COMPLETE
+### Task 2: TLS with SMP-Compatible CA Chain - COMPLETE
+### Task 3: SMP Version Handshake - COMPLETE
+### Task 4: PING/PONG Verification - COMPLETE
+### Task 5: NEW Command - COMPLETE
+### Task 6: SUB Command - COMPLETE
+### Task 7: KEY + SEND/MSG/ACK - COMPLETE
+### Task 8: Integration Tests - COMPLETE
+### Task 9: BadgerDB Store - COMPLETE
 
-### Task 2: TLS with SMP-Compatible CA Chain
-- Generate self-signed Ed25519 CA keypair during init
-- Sign online TLS cert with CA
-- Store CA and cert in data directory, persist across restarts
-- CA fingerprint is the server identity - MUST remain stable
-- Print SMP URI with CA fingerprint on startup: `smp://<fingerprint>@host:5223`
-- Read: docs/deployment/05-tls-certificates.md
-- Branch: feature/tls-ca-chain
-- Commit: `feat(smp): implement SMP-compatible TLS CA chain`
+## Phase 2 Implementation Plan
 
-### Task 3: SMP Version Handshake
-- After TLS, server sends version range (min=6, max=7) + server public key
-- Client responds with version + client public key + auth
-- Agree on highest mutual version
-- SMP protocol spec: github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md
-- Read: docs/research/01-smp-server-analysis.md (Connection Lifecycle section)
-- Branch: feature/smp-handshake
-- Commit: `feat(smp): implement version handshake`
+### Task 1: DEL Command
+- Delete queue by recipientID with Ed25519 signature verification
+- Remove all messages, sender mapping, and recipient key index
+- Idempotent (DEL on deleted queue returns OK)
+- Branch: feature/queue-del
 
-### Task 4: PING/PONG Verification
-- Verify full round-trip: client PING in 16 KB block, server PONG in 16 KB block
-- Proper '#' padding, proper length encoding
-- Write test that connects via TLS and exchanges PING/PONG
-- Branch: feature/ping-pong-test
-- Commit: `test(smp): add PING/PONG integration test`
+### Task 2: OFF Command
+- Turn off notifications for a queue
+- Unsubscribe the connection without deleting the queue
+- Branch: feature/queue-off
 
-### Task 5: NEW Command
-- Generate random 24-byte recipientID and senderID using crypto/rand
-- Generate server DH keypair (X25519) for re-encryption
-- Store queue record
-- Return IDS response with both IDs and server DH public key
-- Implicitly subscribe creating connection
-- Must be idempotent
-- Read: docs/protocol/06-queue-operations.md
-- Branch: feature/queue-new
-- Commit: `feat(smp): implement NEW command with queue creation`
+### Task 3: QueueStore Cleanup on Connection Drop
+- Unsubscribe all queues when a connection drops
+- Ensure no leaked subscriptions in SubscriptionHub
+- Branch: feature/connection-cleanup
 
-### Task 6: SUB Command
-- Verify Ed25519 signature against queue's recipientKey
-- One-subscriber-per-queue rule: send END to old subscriber on takeover
-- If message pending, deliver via MSG immediately
-- If no message, respond OK
-- Branch: feature/queue-sub
-- Commit: `feat(smp): implement SUB command with subscription takeover`
+### Task 4: Connection Timeout Handling
+- Enforce read/write deadlines from config (ReadTimeout, WriteTimeout)
+- Handshake timeout for SMP version negotiation
+- Idle connection reaping
+- Branch: feature/connection-timeouts
 
-### Task 7: KEY + SEND/MSG/ACK
-- KEY: set sender public key (one-time, error on repeat)
-- SEND: verify sender signature, store message, deliver if subscriber exists
-- MSG: deliver oldest unACKed message, one at a time
-- ACK: delete message, deliver next if available
-- Branch: feature/message-delivery
-- Commit: `feat(smp): implement message delivery cycle (KEY, SEND, MSG, ACK)`
+### Task 5: Prometheus Metrics Endpoint
+- Expose metrics on :9100 using prometheus/client_golang
+- Counters: connections, commands processed, messages sent/received, errors
+- Gauges: active connections, active subscriptions, queue count
+- Histograms: command latency, message size
+- Branch: feature/prometheus-metrics
 
-### Task 8: Integration Tests
-- Test complete flow: NEW -> KEY -> SEND -> MSG -> ACK
-- Test subscription takeover (SUB from second connection, first gets END)
-- Test idempotency (retry NEW, retry ACK)
-- Test error cases (SEND before KEY, SUB on nonexistent queue)
-- Branch: feature/integration-tests
-- Commit: `test(smp): add integration tests for complete message flow`
+### Task 6: Rate Limiting
+- Per-connection rate limiting with golang.org/x/time/rate
+- Configurable via LimitsConfig (CommandsPerSecond, CommandsBurst)
+- Return ERR with appropriate error code when rate exceeded
+- Branch: feature/rate-limiting
 
-### Task 9: BadgerDB Store
-- Implement QueueStore interface with BadgerDB v4
-- Key schema per docs/architecture/03-queue-store.md
-- Native TTL for message expiry (48h default, 7d hard max)
-- Per-message symmetric key for cryptographic deletion
-- GC loop every 5 minutes
-- Run all existing tests against BadgerDB store
-- Branch: feature/badger-store
-- Commit: `feat(store): implement BadgerDB queue store with TTL and crypto deletion`
+### Task 7: Graceful Shutdown
+- Drain in-flight messages before closing connections
+- Wait for active transactions to complete
+- Close BadgerDB cleanly
+- Signal handling (SIGTERM, SIGINT)
+- Branch: feature/graceful-shutdown
+
+### Task 8: Admin Dashboard
+- Embedded web UI via go:embed on :9090
+- Server status, connection count, queue stats
+- No sensitive data exposed (no queue IDs, no message content)
+- Branch: feature/admin-dashboard
+
+### Task 9: Dockerfile and docker-compose.yml
+- Multi-stage Dockerfile (build + minimal runtime image)
+- docker-compose.yml with volume for data directory
+- Health check endpoint
+- Branch: feature/docker
+
+### Task 10: systemd Unit File
+- systemd service file for Linux deployment
+- Proper user/group, data directory permissions
+- Restart on failure with backoff
+- Branch: feature/systemd
 
 ## Critical Protocol Details
 
