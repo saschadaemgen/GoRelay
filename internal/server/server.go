@@ -11,6 +11,7 @@ import (
 
 	"github.com/saschadaemgen/GoRelay/internal/config"
 	"github.com/saschadaemgen/GoRelay/internal/protocol/common"
+	"github.com/saschadaemgen/GoRelay/internal/protocol/smp"
 	"github.com/saschadaemgen/GoRelay/internal/queue"
 )
 
@@ -200,7 +201,14 @@ func (s *Server) handleSMPConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	slog.Info("SMP client connected", "connections", s.connectionCount.Load())
+	// SMP version handshake (inside 16KB block framing)
+	hsResult, err := smp.ServerHandshake(tlsConn)
+	if err != nil {
+		slog.Debug("SMP handshake failed", "err", err)
+		return
+	}
+
+	slog.Info("SMP handshake complete", "version", hsResult.Version)
 
 	client := NewClient(conn, ProtocolSMP)
 	defer s.clientDisconnected(client)
