@@ -31,7 +31,24 @@ type Server struct {
 // New creates a new GoRelay server instance
 func New(cfg *config.Config) (*Server, error) {
 	store := queue.NewMemoryStore()
+	return newWithStore(cfg, store)
+}
 
+// NewWithBadger creates a server backed by BadgerDB.
+func NewWithBadger(cfg *config.Config) (*Server, error) {
+	badgerCfg := queue.BadgerStoreConfig{
+		Path:       cfg.Store.Path,
+		DefaultTTL: cfg.Store.DefaultTTL,
+		MaxTTL:     cfg.Store.MaxTTL,
+	}
+	store, err := queue.NewBadgerStore(badgerCfg)
+	if err != nil {
+		return nil, fmt.Errorf("badger store: %w", err)
+	}
+	return newWithStore(cfg, store)
+}
+
+func newWithStore(cfg *config.Config, store queue.Store) (*Server, error) {
 	var cm *CertManager
 	if cfg.SMP.Enabled {
 		var err error
@@ -689,4 +706,7 @@ func (s *Server) shutdown() {
 	slog.Info("waiting for active connections to close")
 	s.clientWg.Wait()
 	slog.Info("all connections closed")
+	if err := s.store.Close(); err != nil {
+		slog.Error("close store failed", "err", err)
+	}
 }
