@@ -69,10 +69,11 @@ type MetricsConfig struct {
 // Overrides holds CLI flag values that override defaults and env vars.
 // Empty string means "not set" (use env or default).
 type Overrides struct {
-	Host    string
-	SMPPort string
-	GRPPort string
-	DataDir string
+	Host      string
+	SMPPort   string
+	GRPPort   string
+	AdminPort string
+	DataDir   string
 }
 
 // Load returns the server configuration with env var defaults.
@@ -101,6 +102,14 @@ func LoadWithOverrides(o Overrides) (*Config, error) {
 		cfg.GRP.Address = fmt.Sprintf(":%d", port)
 	}
 
+	if v := os.Getenv("GORELAY_ADMIN_PORT"); v != "" {
+		port, err := parsePort(v, "GORELAY_ADMIN_PORT")
+		if err != nil {
+			return nil, err
+		}
+		cfg.Metrics.Address = fmt.Sprintf("127.0.0.1:%d", port)
+	}
+
 	// Apply CLI overrides (highest precedence)
 	if o.Host != "" {
 		cfg.Server.Hostname = o.Host
@@ -118,6 +127,13 @@ func LoadWithOverrides(o Overrides) (*Config, error) {
 			return nil, err
 		}
 		cfg.GRP.Address = fmt.Sprintf(":%d", port)
+	}
+	if o.AdminPort != "" {
+		port, err := parsePort(o.AdminPort, "--admin-port")
+		if err != nil {
+			return nil, err
+		}
+		cfg.Metrics.Address = fmt.Sprintf("127.0.0.1:%d", port)
 	}
 	if o.DataDir != "" {
 		cfg.Server.DataDir = o.DataDir

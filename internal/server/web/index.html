@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GoRelay Dashboard</title>
+<style>
+:root {
+  --bg: #FAFBFC;
+  --card: #FFFFFF;
+  --text: #1a1a2e;
+  --text-secondary: #6b7280;
+  --border: #e5e7eb;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-lg: 0 4px 12px rgba(0,0,0,0.08);
+  --emerald: #10B981;
+  --emerald-bg: #ecfdf5;
+  --indigo: #6366F1;
+  --indigo-bg: #eef2ff;
+  --violet: #8B5CF6;
+  --violet-bg: #f5f3ff;
+  --red: #EF4444;
+  --red-bg: #fef2f2;
+  --amber: #F59E0B;
+  --amber-bg: #fffbeb;
+  --radius: 12px;
+  --transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="dark"] {
+  --bg: #0C0F1A;
+  --card: #151929;
+  --text: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --border: #1e293b;
+  --shadow: 0 1px 3px rgba(0,0,0,0.3);
+  --shadow-lg: 0 4px 12px rgba(0,0,0,0.4);
+  --emerald-bg: #064e3b20;
+  --indigo-bg: #312e8120;
+  --violet-bg: #4c1d9520;
+  --red-bg: #7f1d1d20;
+  --amber-bg: #78350f20;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  transition: background var(--transition), color var(--transition);
+  min-height: 100vh;
+}
+
+.container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 32px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.logo { display: flex; align-items: center; gap: 12px; }
+.logo h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+.logo .badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--emerald-bg);
+  color: var(--emerald);
+}
+
+.header-controls { display: flex; align-items: center; gap: 12px; }
+
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--emerald);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.theme-toggle {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 14px;
+  transition: all var(--transition);
+}
+.theme-toggle:hover { box-shadow: var(--shadow); }
+
+.smp-uri-bar {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: var(--shadow);
+}
+.smp-uri-bar .label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--emerald);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.smp-uri-bar .uri {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.smp-uri-bar .copy-btn {
+  background: var(--emerald);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity var(--transition);
+  white-space: nowrap;
+}
+.smp-uri-bar .copy-btn:hover { opacity: 0.85; }
+
+.section-title {
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+  transition: all var(--transition);
+}
+.card:hover { box-shadow: var(--shadow-lg); }
+
+.card .card-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.card .card-value {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  line-height: 1;
+}
+.card .card-sub {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
+.card.emerald .card-value { color: var(--emerald); }
+.card.indigo .card-value { color: var(--indigo); }
+.card.violet .card-value { color: var(--violet); }
+.card.amber .card-value { color: var(--amber); }
+
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 32px; }
+@media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+.panel h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.event-list { max-height: 320px; overflow-y: auto; }
+.event-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.event-item:last-child { border-bottom: none; }
+.event-type {
+  font-weight: 600;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.event-type.auth_failure { background: var(--red-bg); color: var(--red); }
+.event-type.subscription_takeover { background: var(--amber-bg); color: var(--amber); }
+.event-type.auto_discard { background: var(--violet-bg); color: var(--violet); }
+.event-detail { color: var(--text-secondary); flex: 1; margin: 0 12px; }
+.event-time { color: var(--text-secondary); font-size: 11px; white-space: nowrap; font-family: monospace; }
+
+.config-table { width: 100%; }
+.config-table tr { border-bottom: 1px solid var(--border); }
+.config-table tr:last-child { border-bottom: none; }
+.config-table td { padding: 8px 0; font-size: 13px; }
+.config-table td:first-child { font-weight: 500; color: var(--text-secondary); width: 40%; }
+.config-table td:last-child { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+
+.encryption-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.layer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.layer.tls { background: var(--emerald-bg); color: var(--emerald); }
+.layer.e2e { background: var(--indigo-bg); color: var(--indigo); }
+.layer.pq { background: var(--violet-bg); color: var(--violet); }
+.layer-icon { font-size: 16px; width: 24px; text-align: center; }
+
+footer {
+  text-align: center;
+  padding: 24px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+}
+
+.no-events {
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="logo">
+      <h1>GoRelay</h1>
+      <span class="badge" id="version-badge">SMP v7</span>
+    </div>
+    <div class="header-controls">
+      <span class="status-dot"></span>
+      <span id="uptime" style="font-size:13px;color:var(--text-secondary)">--</span>
+      <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn">Dark</button>
+    </div>
+  </header>
+
+  <div class="smp-uri-bar">
+    <span class="label">SMP URI</span>
+    <span class="uri" id="smp-uri">Loading...</span>
+    <button class="copy-btn" onclick="copyURI()">Copy</button>
+  </div>
+
+  <div class="section-title">Overview</div>
+  <div class="cards">
+    <div class="card emerald">
+      <div class="card-label">Active Connections</div>
+      <div class="card-value" id="m-conns-total">-</div>
+      <div class="card-sub"><span id="m-conns-smp">0</span> SMP / <span id="m-conns-grp">0</span> GRP</div>
+    </div>
+    <div class="card emerald">
+      <div class="card-label">Peak Connections</div>
+      <div class="card-value" id="m-peak">-</div>
+      <div class="card-sub">Session maximum</div>
+    </div>
+    <div class="card indigo">
+      <div class="card-label">Active Queues</div>
+      <div class="card-value" id="m-queues">-</div>
+      <div class="card-sub">Message queues</div>
+    </div>
+    <div class="card indigo">
+      <div class="card-label">Messages Sent</div>
+      <div class="card-value" id="m-sent">-</div>
+      <div class="card-sub">Total SEND commands</div>
+    </div>
+    <div class="card violet">
+      <div class="card-label">Messages Delivered</div>
+      <div class="card-value" id="m-received">-</div>
+      <div class="card-sub">MSG delivered to subscribers</div>
+    </div>
+    <div class="card violet">
+      <div class="card-label">Commands Processed</div>
+      <div class="card-value" id="m-commands">-</div>
+      <div class="card-sub">All protocol commands</div>
+    </div>
+    <div class="card amber">
+      <div class="card-label">Auto-Discarded</div>
+      <div class="card-value" id="m-discarded">-</div>
+      <div class="card-sub">Max delivery attempts exceeded</div>
+    </div>
+    <div class="card amber">
+      <div class="card-label">Memory</div>
+      <div class="card-value" id="m-mem">-</div>
+      <div class="card-sub" id="m-mem-sys">Sys: -</div>
+    </div>
+  </div>
+
+  <div class="two-col">
+    <div>
+      <div class="section-title">Security</div>
+      <div class="panel">
+        <h3>Encryption Layers</h3>
+        <div class="encryption-layers">
+          <div class="layer tls">
+            <span class="layer-icon">&#128274;</span>
+            TLS 1.3 with Ed25519 CA chain
+          </div>
+          <div class="layer e2e">
+            <span class="layer-icon">&#128273;</span>
+            X25519 DH key exchange per queue
+          </div>
+          <div class="layer pq">
+            <span class="layer-icon">&#128737;</span>
+            AES-256-GCM per-message encryption
+          </div>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <h3>Security Events <span style="font-weight:400;font-size:12px;color:var(--text-secondary)" id="event-count">(0)</span></h3>
+        <div class="event-list" id="event-list">
+          <div class="no-events">No security events recorded</div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="section-title">Server</div>
+      <div class="panel">
+        <h3>Configuration</h3>
+        <table class="config-table">
+          <tr><td>Hostname</td><td id="cfg-hostname">-</td></tr>
+          <tr><td>SMP Address</td><td id="cfg-smp">-</td></tr>
+          <tr><td>GRP Address</td><td id="cfg-grp">-</td></tr>
+          <tr><td>Store Path</td><td id="cfg-store">-</td></tr>
+          <tr><td>Default TTL</td><td id="cfg-ttl">-</td></tr>
+          <tr><td>Max TTL</td><td id="cfg-max-ttl">-</td></tr>
+        </table>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <h3>Resources</h3>
+        <table class="config-table">
+          <tr><td>Goroutines</td><td id="res-goroutines">-</td></tr>
+          <tr><td>Heap Alloc</td><td id="res-heap">-</td></tr>
+          <tr><td>System Memory</td><td id="res-sys">-</td></tr>
+          <tr><td>Total SMP Conns</td><td id="res-total-smp">-</td></tr>
+          <tr><td>Total GRP Conns</td><td id="res-total-grp">-</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Zero-Knowledge Server Administration &mdash; No message content, No user IDs, No IP addresses
+  </footer>
+</div>
+
+<script>
+(function() {
+  // Theme
+  const saved = localStorage.getItem('gorelay-theme');
+  if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+  updateThemeBtn();
+
+  // Animated counter
+  const counters = {};
+  function animateValue(el, target) {
+    const id = el.id;
+    if (!counters[id]) counters[id] = { current: 0 };
+    const state = counters[id];
+    if (state.current === target) return;
+
+    const start = state.current;
+    const diff = target - start;
+    const duration = 400;
+    const startTime = performance.now();
+
+    function step(now) {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const val = Math.round(start + diff * eased);
+      el.textContent = val.toLocaleString();
+      if (progress < 1) {
+        requestAnimationFrame(step);
+      } else {
+        state.current = target;
+      }
+    }
+    requestAnimationFrame(step);
+  }
+
+  function setVal(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (typeof value === 'number' && Number.isInteger(value)) {
+      animateValue(el, value);
+    } else {
+      el.textContent = value;
+    }
+  }
+
+  function formatUptime(seconds) {
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
+    if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
+    if (m > 0) return m + 'm ' + s + 's';
+    return s + 's';
+  }
+
+  function formatMB(mb) {
+    if (mb < 1) return (mb * 1024).toFixed(0) + ' KB';
+    return mb.toFixed(1) + ' MB';
+  }
+
+  function formatTime(iso) {
+    const d = new Date(iso);
+    return d.toLocaleTimeString();
+  }
+
+  async function fetchMetrics() {
+    try {
+      const resp = await fetch('/api/metrics');
+      const data = await resp.json();
+
+      setVal('m-conns-total', data.active_connections_total);
+      setVal('m-conns-smp', data.active_connections_smp);
+      setVal('m-conns-grp', data.active_connections_grp);
+      setVal('m-peak', data.peak_connections);
+      setVal('m-queues', data.active_queues);
+      setVal('m-sent', data.messages_sent);
+      setVal('m-received', data.messages_received);
+      setVal('m-commands', data.commands_processed);
+      setVal('m-discarded', data.messages_discarded);
+      setVal('m-mem', formatMB(data.mem_alloc_mb));
+      setVal('m-mem-sys', 'Sys: ' + formatMB(data.mem_sys_mb));
+      setVal('uptime', formatUptime(data.uptime_seconds));
+
+      // Config
+      if (data.config) {
+        setVal('smp-uri', data.config.smp_uri || 'N/A');
+        setVal('cfg-hostname', data.config.hostname);
+        setVal('cfg-smp', data.config.smp_address);
+        setVal('cfg-grp', data.config.grp_address);
+        setVal('cfg-store', data.config.store_path);
+        setVal('cfg-ttl', data.config.default_ttl);
+        setVal('cfg-max-ttl', data.config.max_ttl);
+      }
+
+      // Resources
+      setVal('res-goroutines', data.num_goroutines);
+      setVal('res-heap', formatMB(data.mem_alloc_mb));
+      setVal('res-sys', formatMB(data.mem_sys_mb));
+      setVal('res-total-smp', data.total_connections_smp);
+      setVal('res-total-grp', data.total_connections_grp);
+    } catch (e) {
+      // silently retry
+    }
+  }
+
+  async function fetchEvents() {
+    try {
+      const resp = await fetch('/api/events');
+      const events = await resp.json();
+      const list = document.getElementById('event-list');
+      const count = document.getElementById('event-count');
+
+      if (!events || events.length === 0) {
+        list.innerHTML = '<div class="no-events">No security events recorded</div>';
+        count.textContent = '(0)';
+        return;
+      }
+
+      count.textContent = '(' + events.length + ')';
+      // Show newest first
+      const reversed = events.slice().reverse();
+      list.innerHTML = reversed.map(function(ev) {
+        return '<div class="event-item">' +
+          '<span class="event-type ' + ev.type + '">' + ev.type.replace(/_/g, ' ') + '</span>' +
+          '<span class="event-detail">' + escapeHtml(ev.detail) + '</span>' +
+          '<span class="event-time">' + formatTime(ev.time) + '</span>' +
+          '</div>';
+      }).join('');
+    } catch (e) {
+      // silently retry
+    }
+  }
+
+  function escapeHtml(s) {
+    const div = document.createElement('div');
+    div.appendChild(document.createTextNode(s));
+    return div.innerHTML;
+  }
+
+  // Initial fetch
+  fetchMetrics();
+  fetchEvents();
+
+  // Auto-refresh
+  setInterval(fetchMetrics, 2000);
+  setInterval(fetchEvents, 5000);
+})();
+
+function toggleTheme() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('gorelay-theme', 'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('gorelay-theme', 'dark');
+  }
+  updateThemeBtn();
+}
+
+function updateThemeBtn() {
+  const btn = document.getElementById('theme-btn');
+  if (!btn) return;
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  btn.textContent = isDark ? 'Light' : 'Dark';
+}
+
+function copyURI() {
+  const uri = document.getElementById('smp-uri').textContent;
+  if (uri && uri !== 'Loading...' && uri !== 'N/A') {
+    navigator.clipboard.writeText(uri).then(function() {
+      const btn = document.querySelector('.copy-btn');
+      btn.textContent = 'Copied!';
+      setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+    });
+  }
+}
+</script>
+</body>
+</html>

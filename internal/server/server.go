@@ -24,6 +24,8 @@ type Server struct {
 	store           queue.Store
 	subHub          *SubscriptionHub
 	certManager     *CertManager
+	metrics         *Metrics
+	smpURI          string
 	connectionCount atomic.Int64
 	clientWg        sync.WaitGroup
 }
@@ -63,12 +65,13 @@ func newWithStore(cfg *config.Config, store queue.Store) (*Server, error) {
 		store:       store,
 		subHub:      NewSubscriptionHub(),
 		certManager: cm,
+		metrics:     NewMetrics(),
 	}, nil
 }
 
-// Run starts both SMP and GRP listeners and blocks until context is cancelled
+// Run starts SMP, GRP, and admin listeners and blocks until context is cancelled
 func (s *Server) Run(ctx context.Context) error {
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 
 	if s.config.SMP.Enabled {
 		go func() {
@@ -82,6 +85,15 @@ func (s *Server) Run(ctx context.Context) error {
 		go func() {
 			if err := s.listenGRP(ctx); err != nil {
 				errCh <- fmt.Errorf("grp listener: %w", err)
+			}
+		}()
+	}
+
+	// Start admin dashboard
+	if s.config.Metrics.Enabled && s.config.Metrics.Address != "" {
+		go func() {
+			if err := s.startAdmin(ctx, s.config.Metrics.Address); err != nil {
+				errCh <- fmt.Errorf("admin server: %w", err)
 			}
 		}()
 	}
@@ -124,8 +136,8 @@ func (s *Server) listenSMP(ctx context.Context) error {
 			}
 		}
 	}
-	smpURI := s.certManager.SMPURI(host, port)
-	slog.Info("SMP listener ready", "address", s.config.SMP.Address, "uri", smpURI)
+	s.smpURI = s.certManager.SMPURI(host, port)
+	slog.Info("SMP listener ready", "address", s.config.SMP.Address, "uri", s.smpURI)
 
 	go func() {
 		<-ctx.Done()
@@ -150,10 +162,14 @@ func (s *Server) listenSMP(ctx context.Context) error {
 		}
 
 		s.connectionCount.Add(1)
+		s.metrics.ActiveConnectionsSMP.Add(1)
+		s.metrics.TotalConnectionsSMP.Add(1)
+		s.metrics.UpdatePeakConnections()
 		s.clientWg.Add(1)
 		go func() {
 			defer s.clientWg.Done()
 			defer s.connectionCount.Add(-1)
+			defer s.metrics.ActiveConnectionsSMP.Add(-1)
 			s.handleSMPConnection(ctx, conn)
 		}()
 	}
@@ -192,10 +208,14 @@ func (s *Server) listenGRP(ctx context.Context) error {
 		}
 
 		s.connectionCount.Add(1)
+		s.metrics.ActiveConnectionsGRP.Add(1)
+		s.metrics.TotalConnectionsGRP.Add(1)
+		s.metrics.UpdatePeakConnections()
 		s.clientWg.Add(1)
 		go func() {
 			defer s.clientWg.Done()
 			defer s.connectionCount.Add(-1)
+			defer s.metrics.ActiveConnectionsGRP.Add(-1)
 			s.handleGRPConnection(ctx, conn)
 		}()
 	}
@@ -342,6 +362,7 @@ func (s *Server) sender(ctx context.Context, c *Client) {
 
 // dispatch routes a command to the appropriate handler
 func (s *Server) dispatch(c *Client, cmd common.Command) common.Response {
+	s.metrics.CommandsProcessed.Add(1)
 	switch cmd.Type {
 	case common.CmdPING:
 		return common.Response{
@@ -393,6 +414,7 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 		errResp.ErrorCode = common.ErrInternal
 		return errResp
 	}
+	s.metrics.ActiveQueues.Add(1)
 
 	// Generate server DH keypair if not already set (new queue)
 	if q.ServerDHPubKey == nil {
@@ -455,11 +477,13 @@ func (s *Server) handleSUB(c *Client, cmd common.Command) common.Response {
 
 	// Verify Ed25519 signature against queue's recipientKey
 	if len(cmd.Signature) == 0 || len(cmd.SignedData) == 0 {
+		s.metrics.AddSecurityEvent("auth_failure", "SUB missing signature")
 		errResp.ErrorCode = common.ErrAuth
 		return errResp
 	}
 
 	if !ed25519.Verify(q.RecipientKey, cmd.SignedData, cmd.Signature) {
+		s.metrics.AddSecurityEvent("auth_failure", "SUB invalid signature")
 		errResp.ErrorCode = common.ErrAuth
 		return errResp
 	}
@@ -491,6 +515,7 @@ func (s *Server) handleSUB(c *Client, cmd common.Command) common.Response {
 	oldSub := s.subHub.Subscribe(q.RecipientID, c)
 	c.subscriptions[q.RecipientID] = true
 	if oldSub != nil && oldSub != c {
+		s.metrics.AddSecurityEvent("subscription_takeover", "queue subscription transferred")
 		// Send END to displaced subscriber
 		oldSub.sndQ <- common.Response{
 			Type:        common.CmdEND,
@@ -591,11 +616,13 @@ func (s *Server) handleSEND(c *Client, cmd common.Command) common.Response {
 
 	// Verify Ed25519 signature
 	if len(cmd.Signature) == 0 || len(cmd.SignedData) == 0 {
+		s.metrics.AddSecurityEvent("auth_failure", "SEND missing signature")
 		errResp.ErrorCode = common.ErrAuth
 		return errResp
 	}
 
 	if !ed25519.Verify(q.SenderKey, cmd.SignedData, cmd.Signature) {
+		s.metrics.AddSecurityEvent("auth_failure", "SEND invalid signature")
 		errResp.ErrorCode = common.ErrAuth
 		return errResp
 	}
@@ -607,6 +634,7 @@ func (s *Server) handleSEND(c *Client, cmd common.Command) common.Response {
 		errResp.ErrorCode = common.ErrInternal
 		return errResp
 	}
+	s.metrics.MessagesSent.Add(1)
 
 	okResp := common.Response{
 		Type:          common.CmdOK,
@@ -620,6 +648,7 @@ func (s *Server) handleSEND(c *Client, cmd common.Command) common.Response {
 	if sub != nil {
 		headMsg, peekErr := s.store.PopMessage(q.RecipientID)
 		if peekErr == nil && headMsg.ID == msg.ID {
+			s.metrics.MessagesReceived.Add(1)
 			okResp.Deliveries = []common.Delivery{{
 				Target: sub.sndQ,
 				Resp: common.Response{
@@ -673,6 +702,7 @@ func (s *Server) handleACK(c *Client, cmd common.Command) common.Response {
 	// Check for next pending message and deliver after OK is sent
 	nextMsg, msgErr := s.store.PopMessage(cmd.EntityID)
 	if msgErr == nil && nextMsg != nil {
+		s.metrics.MessagesReceived.Add(1)
 		okResp.Deliveries = []common.Delivery{{
 			Target: c.sndQ,
 			Resp: common.Response{

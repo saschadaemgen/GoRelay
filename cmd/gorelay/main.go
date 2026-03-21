@@ -27,6 +27,7 @@ func main() {
 	flag.StringVar(&overrides.SMPPort, "smp-port", "", "SMP listener port (default: 5223)")
 	flag.StringVar(&overrides.GRPPort, "grp-port", "", "GRP listener port (default: 7443)")
 	flag.StringVar(&overrides.DataDir, "data-dir", "", "data directory path (default: ./data)")
+	flag.StringVar(&overrides.AdminPort, "admin-port", "", "admin dashboard port (default: 9090)")
 	flag.Parse()
 
 	// Setup structured logging
@@ -55,6 +56,7 @@ func main() {
 		"store_path", cfg.Store.Path,
 		"store_default_ttl", cfg.Store.DefaultTTL.String(),
 		"store_max_ttl", cfg.Store.MaxTTL.String(),
+		"admin_address", cfg.Metrics.Address,
 	)
 
 	// Create server
