@@ -206,16 +206,16 @@ The complete GRP specification consists of the following documents:
 
 | Document | Contents |
 |---|---|
-| [Overview](overview) | This document - protocol architecture and design philosophy |
-| [Threat Model](threat-model) | Adversary capabilities, trust assumptions, protected properties |
-| [Cryptographic Primitives](cryptographic-primitives) | All algorithms with selection rationale |
-| [Handshake](handshake) | Noise handshake with hybrid PQC key exchange |
-| [Message Format](message-format) | Byte-level frame format, block structure, encoding rules |
-| [Queue Operations](queue-operations) | Command semantics, state machine, idempotency rules |
-| [Relay Routing](relay-routing) | Two-hop forwarding specification, encryption layers |
-| [Cover Traffic](cover-traffic) | Poisson model, dummy generation, bandwidth parameters |
-| [SMP Compatibility](smp-compatibility) | Interoperability rules, protocol bridging, shared queue store |
-| [Test Vectors](test-vectors) | Reference values for handshake, encryption, and framing |
+| [Overview](01-overview) | This document - protocol architecture and design philosophy |
+| [Threat Model](02-threat-model) | Adversary capabilities, trust assumptions, protected properties |
+| [Cryptographic Primitives](03-cryptographic-primitives) | All algorithms with selection rationale |
+| [Handshake](04-handshake) | Noise handshake with hybrid PQC key exchange |
+| [Message Format](05-message-format) | Byte-level frame format, block structure, encoding rules |
+| [Queue Operations](06-queue-operations) | Command semantics, state machine, idempotency rules |
+| [Relay Routing](07-relay-routing) | Two-hop forwarding specification, encryption layers |
+| [Cover Traffic](08-cover-traffic) | Poisson model, dummy generation, bandwidth parameters |
+| [SMP Compatibility](09-smp-compatibility) | Interoperability rules, protocol bridging, shared queue store |
+| [Test Vectors](10-test-vectors) | Reference values for handshake, encryption, and framing |
 
 ---
 
