@@ -1,23 +1,38 @@
-package server
+﻿package server
 
-// Development-only self-signed certificate
-// DO NOT use in production - generate real certificates with gorelay init
+import (
+"crypto/ecdsa"
+"crypto/elliptic"
+"crypto/rand"
+"crypto/tls"
+"crypto/x509"
+"math/big"
+"time"
+)
 
-var devCertPEM = []byte(`-----BEGIN CERTIFICATE-----
-MIIBhTCCASugAwIBAgIQIRi6zePL6mKjOipn+dNuaTAKBggqhkjOPQQDAjASMRAw
-DgYDVQQKEwdBY21lIENvMB4XDTE3MTAyMDE5NDMwNloXDTE4MTAyMDE5NDMwNlow
-EjEQMA4GA1UEChMHQWNtZSBDbzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLU3
-jSQKKmo/6yULMuEsNBKvIBftBOT4lYLZPgiIYTHlRMS3DO04LD2kFLsBGas5wEm2
-AYIEZFkPJRYThGRcJNGjYzBhMA4GA1UdDwEB/wQEAwICpDATBgNVHSUEDDAKBggr
-BgEFBQcDATAPBgNVHRMBAf8EBTADAQH/MCkGA1UdEQQiMCCCDmxvY2FsaG9zdDo1
-NDUzgg4xMjcuMC4wLjE6NTQ1MzAKBggqhkjOPQQDAgNIADBFAiEA2wpSek3WX64h
-kkRJBECDHPPqA64BLBE3kIhj9LGwH2cCIBJlYGIT6fzMPLqDXfQB+3sDxpd9aN4G
-aN5IN3JUXfS1
------END CERTIFICATE-----`)
+// generateDevCert creates a self-signed TLS certificate for development.
+// DO NOT use in production - generate real certificates with gorelay init.
+func generateDevCert() (tls.Certificate, error) {
+key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+if err != nil {
+return tls.Certificate{}, err
+}
 
-var devKeyPEM = []byte(`-----BEGIN EC PRIVATE KEY-----
-MHQCAQEEIIrYSSNQFaA2Hwf583QmKbyavkgoftpCYhP8lk6RWRHmoAcGBSuBBAAi
-oWQDYgAEF5Qscy3GRIczDHaRUhlOPCRAPCj2RCZTnMRGzE1+hHAMQ0v/dBMJ86VP
-3aWsLdS3FgCb8GeH78K34OAWZIXQ1iHbl9hm/bzHB+bU7obHVJEmDJ+zz0IZFAPR
-zAxEH8OX
------END EC PRIVATE KEY-----`)
+template := &x509.Certificate{
+SerialNumber: big.NewInt(1),
+NotBefore:    time.Now(),
+NotAfter:     time.Now().Add(24 * time.Hour),
+KeyUsage:     x509.KeyUsageDigitalSignature,
+ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+}
+
+certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+if err != nil {
+return tls.Certificate{}, err
+}
+
+return tls.Certificate{
+Certificate: [][]byte{certDER},
+PrivateKey:  key,
+}, nil
+}

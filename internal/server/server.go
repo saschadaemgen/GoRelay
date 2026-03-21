@@ -75,7 +75,7 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) listenSMP(ctx context.Context) error {
 	// TODO: load real TLS certificates
 	// For now, generate self-signed cert for development
-	cert, err := tls.X509KeyPair(devCertPEM, devKeyPEM)
+	cert, err := generateDevCert()
 	if err != nil {
 		return fmt.Errorf("load tls cert: %w", err)
 	}
