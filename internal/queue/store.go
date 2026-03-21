@@ -45,13 +45,19 @@ type Queue struct {
 // StatusActive indicates the queue is accepting messages
 const StatusActive byte = 0x01
 
+// MaxDeliveryAttempts is the maximum number of times a message will be
+// delivered before being automatically discarded. This prevents the
+// redelivery loop attack (compression bomb + no ACK = device bricked).
+const MaxDeliveryAttempts = 5
+
 // Message represents a stored message
 type Message struct {
-	ID        [24]byte
-	QueueID   [24]byte
-	Timestamp uint64
-	Flags     byte
-	Body      []byte
+	ID               [24]byte
+	QueueID          [24]byte
+	Timestamp        uint64
+	Flags            byte
+	Body             []byte
+	DeliveryAttempts int
 }
 
 // MemoryStore is an in-memory queue store for development and testing
@@ -229,11 +235,23 @@ func (s *MemoryStore) PopMessage(recipientID [24]byte) (*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	msgs, ok := s.messages[recipientID]
-	if !ok || len(msgs) == 0 {
-		return nil, ErrNoMessage
+	for {
+		msgs, ok := s.messages[recipientID]
+		if !ok || len(msgs) == 0 {
+			return nil, ErrNoMessage
+		}
+
+		msg := msgs[0]
+		msg.DeliveryAttempts++
+
+		if msg.DeliveryAttempts >= MaxDeliveryAttempts {
+			// Auto-discard: message exceeded max delivery attempts
+			s.messages[recipientID] = msgs[1:]
+			continue
+		}
+
+		return msg, nil
 	}
-	return msgs[0], nil
 }
 
 func (s *MemoryStore) AckMessage(recipientID [24]byte, msgID [24]byte) error {
