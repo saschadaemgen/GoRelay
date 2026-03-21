@@ -289,10 +289,20 @@ func (s *Server) processor(ctx context.Context, c *Client) {
 			return
 		case cmd := <-c.rcvQ:
 			resp := s.dispatch(c, cmd)
+			deliveries := resp.Deliveries
+			resp.Deliveries = nil
 			select {
 			case c.sndQ <- resp:
 			case <-ctx.Done():
 				return
+			}
+			// Send follow-up deliveries after the primary response
+			for _, d := range deliveries {
+				select {
+				case d.Target <- d.Resp:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
@@ -325,6 +335,12 @@ func (s *Server) dispatch(c *Client, cmd common.Command) common.Response {
 		return s.handleNEW(c, cmd)
 	case common.CmdSUB:
 		return s.handleSUB(c, cmd)
+	case common.CmdKEY:
+		return s.handleKEY(c, cmd)
+	case common.CmdSEND:
+		return s.handleSEND(c, cmd)
+	case common.CmdACK:
+		return s.handleACK(c, cmd)
 	default:
 		// TODO: implement all command handlers
 		return common.Response{
@@ -485,6 +501,176 @@ func (s *Server) handleSUB(c *Client, cmd common.Command) common.Response {
 		Type:          common.CmdOK,
 		CorrelationID: cmd.CorrelationID,
 	}
+}
+
+// handleKEY sets the sender's public key on a queue (one-time operation).
+// The command uses senderID as entityID.
+func (s *Server) handleKEY(c *Client, cmd common.Command) common.Response {
+	errResp := common.Response{
+		Type:          common.CmdERR,
+		CorrelationID: cmd.CorrelationID,
+	}
+
+	if !cmd.HasEntityID {
+		errResp.ErrorCode = common.ErrNoQueue
+		return errResp
+	}
+
+	// Body contains the sender's Ed25519 public key (32 bytes)
+	if len(cmd.Body) < ed25519.PublicKeySize {
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+
+	senderKey := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	copy(senderKey, cmd.Body[:ed25519.PublicKeySize])
+
+	err := s.store.SetSenderKey(cmd.EntityID, senderKey)
+	if err != nil {
+		if err == queue.ErrKeyAlreadySet {
+			errResp.ErrorCode = common.ErrAuth
+			return errResp
+		}
+		if err == queue.ErrNoQueue {
+			errResp.ErrorCode = common.ErrNoQueue
+			return errResp
+		}
+		slog.Error("set sender key failed", "err", err)
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+
+	return common.Response{
+		Type:          common.CmdOK,
+		CorrelationID: cmd.CorrelationID,
+	}
+}
+
+// handleSEND stores a message and delivers it if the recipient is subscribed.
+// The command uses senderID as entityID.
+func (s *Server) handleSEND(c *Client, cmd common.Command) common.Response {
+	errResp := common.Response{
+		Type:          common.CmdERR,
+		CorrelationID: cmd.CorrelationID,
+	}
+
+	if !cmd.HasEntityID {
+		errResp.ErrorCode = common.ErrNoQueue
+		return errResp
+	}
+
+	// Look up queue by senderID
+	q, err := s.store.GetQueueBySenderID(cmd.EntityID)
+	if err != nil {
+		errResp.ErrorCode = common.ErrNoQueue
+		return errResp
+	}
+
+	// Verify sender key is set
+	if q.SenderKey == nil {
+		errResp.ErrorCode = common.ErrNoKey
+		return errResp
+	}
+
+	// Verify Ed25519 signature
+	if len(cmd.Signature) == 0 || len(cmd.SignedData) == 0 {
+		errResp.ErrorCode = common.ErrAuth
+		return errResp
+	}
+
+	if !ed25519.Verify(q.SenderKey, cmd.SignedData, cmd.Signature) {
+		errResp.ErrorCode = common.ErrAuth
+		return errResp
+	}
+
+	// Store message (body is the encrypted message content)
+	msg, err := s.store.PushMessage(cmd.EntityID, 0, cmd.Body)
+	if err != nil {
+		slog.Error("push message failed", "err", err)
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+
+	okResp := common.Response{
+		Type:          common.CmdOK,
+		CorrelationID: cmd.CorrelationID,
+	}
+
+	// Only deliver MSG immediately if this message is at the head of the queue
+	// (no other unACKed messages ahead of it). Otherwise, it will be delivered
+	// when the current in-flight message is ACKed.
+	sub := s.subHub.GetSubscriber(q.RecipientID)
+	if sub != nil {
+		headMsg, peekErr := s.store.PopMessage(q.RecipientID)
+		if peekErr == nil && headMsg.ID == msg.ID {
+			okResp.Deliveries = []common.Delivery{{
+				Target: sub.sndQ,
+				Resp: common.Response{
+					Type:        common.CmdMSG,
+					HasEntityID: true,
+					EntityID:    q.RecipientID,
+					MessageID:   msg.ID,
+					Timestamp:   msg.Timestamp,
+					Flags:       msg.Flags,
+					Body:        msg.Body,
+				},
+			}}
+		}
+	}
+
+	return okResp
+}
+
+// handleACK acknowledges a message, deletes it, and delivers the next if available.
+// The command uses recipientID as entityID.
+func (s *Server) handleACK(c *Client, cmd common.Command) common.Response {
+	errResp := common.Response{
+		Type:          common.CmdERR,
+		CorrelationID: cmd.CorrelationID,
+	}
+
+	if !cmd.HasEntityID {
+		errResp.ErrorCode = common.ErrNoQueue
+		return errResp
+	}
+
+	// Body contains msgID (24 bytes)
+	var msgID [24]byte
+	if len(cmd.Body) >= 24 {
+		copy(msgID[:], cmd.Body[:24])
+	}
+
+	// AckMessage is idempotent
+	err := s.store.AckMessage(cmd.EntityID, msgID)
+	if err != nil {
+		slog.Error("ack message failed", "err", err)
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+
+	okResp := common.Response{
+		Type:          common.CmdOK,
+		CorrelationID: cmd.CorrelationID,
+	}
+
+	// Check for next pending message and deliver after OK is sent
+	nextMsg, msgErr := s.store.PopMessage(cmd.EntityID)
+	if msgErr == nil && nextMsg != nil {
+		okResp.Deliveries = []common.Delivery{{
+			Target: c.sndQ,
+			Resp: common.Response{
+				Type:        common.CmdMSG,
+				HasEntityID: true,
+				EntityID:    cmd.EntityID,
+				MessageID:   nextMsg.ID,
+				Timestamp:   nextMsg.Timestamp,
+				Flags:       nextMsg.Flags,
+				Body:        nextMsg.Body,
+			},
+		}}
+	}
+
+	return okResp
 }
 
 // clientDisconnected cleans up after a client disconnects

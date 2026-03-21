@@ -70,6 +70,17 @@ type Response struct {
 	Flags         byte
 	ErrorCode     byte
 	Body          []byte
+
+	// Deliveries are additional responses to send to specific clients
+	// after this response has been queued. Used by SEND and ACK to
+	// deliver MSG after the OK response.
+	Deliveries []Delivery
+}
+
+// Delivery represents a response to deliver to a specific client channel
+type Delivery struct {
+	Target chan<- Response
+	Resp   Response
 }
 
 // Serialize encodes a response into bytes for block framing

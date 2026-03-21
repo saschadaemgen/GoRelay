@@ -11,17 +11,20 @@ import (
 )
 
 var (
-	ErrNoQueue   = errors.New("queue not found")
-	ErrNoMessage = errors.New("no message available")
+	ErrNoQueue      = errors.New("queue not found")
+	ErrNoMessage    = errors.New("no message available")
+	ErrKeyAlreadySet = errors.New("sender key already set")
 )
 
 // Store defines the interface for persistent queue storage
 type Store interface {
 	CreateQueue(recipientKey ed25519.PublicKey) (*Queue, error)
 	GetQueue(recipientID [24]byte) (*Queue, error)
+	GetQueueBySenderID(senderID [24]byte) (*Queue, error)
 	FindQueueByRecipientKey(recipientKey ed25519.PublicKey) (*Queue, error)
+	SetSenderKey(senderID [24]byte, senderKey ed25519.PublicKey) error
 	DeleteQueue(recipientID [24]byte) error
-	PushMessage(senderID [24]byte, flags byte, body []byte) error
+	PushMessage(senderID [24]byte, flags byte, body []byte) (*Message, error)
 	PopMessage(recipientID [24]byte) (*Message, error)
 	AckMessage(recipientID [24]byte, msgID [24]byte) error
 	Close() error
@@ -32,8 +35,9 @@ type Queue struct {
 	RecipientID    [24]byte
 	SenderID       [24]byte
 	RecipientKey   ed25519.PublicKey
-	ServerDHPubKey []byte // X25519 public key (32 bytes)
-	ServerDHSecret []byte // X25519 private key (32 bytes) - zeroed after use
+	SenderKey      ed25519.PublicKey // set via KEY command, nil until then
+	ServerDHPubKey []byte           // X25519 public key (32 bytes)
+	ServerDHSecret []byte           // X25519 private key (32 bytes) - zeroed after use
 	Status         byte
 	CreatedAt      time.Time
 }
@@ -112,6 +116,41 @@ func (s *MemoryStore) GetQueue(recipientID [24]byte) (*Queue, error) {
 	return q, nil
 }
 
+func (s *MemoryStore) GetQueueBySenderID(senderID [24]byte) (*Queue, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	recipientID, ok := s.senders[senderID]
+	if !ok {
+		return nil, ErrNoQueue
+	}
+	q, ok := s.queues[recipientID]
+	if !ok {
+		return nil, ErrNoQueue
+	}
+	return q, nil
+}
+
+func (s *MemoryStore) SetSenderKey(senderID [24]byte, senderKey ed25519.PublicKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	recipientID, ok := s.senders[senderID]
+	if !ok {
+		return ErrNoQueue
+	}
+	q, ok := s.queues[recipientID]
+	if !ok {
+		return ErrNoQueue
+	}
+	if q.SenderKey != nil {
+		return ErrKeyAlreadySet
+	}
+	q.SenderKey = make(ed25519.PublicKey, len(senderKey))
+	copy(q.SenderKey, senderKey)
+	return nil
+}
+
 func (s *MemoryStore) FindQueueByRecipientKey(recipientKey ed25519.PublicKey) (*Queue, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -138,24 +177,52 @@ func (s *MemoryStore) DeleteQueue(recipientID [24]byte) error {
 	return nil
 }
 
-func (s *MemoryStore) PushMessage(senderID [24]byte, flags byte, body []byte) error {
+func (s *MemoryStore) PushMessage(senderID [24]byte, flags byte, body []byte) (*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	recipientID, ok := s.senders[senderID]
 	if !ok {
-		return ErrNoQueue
+		return nil, ErrNoQueue
+	}
+
+	// Generate message ID: timestamp(8) + sequence(8) + random(8)
+	var msgID [24]byte
+	now := uint64(time.Now().UnixNano())
+	msgID[0] = byte(now >> 56)
+	msgID[1] = byte(now >> 48)
+	msgID[2] = byte(now >> 40)
+	msgID[3] = byte(now >> 32)
+	msgID[4] = byte(now >> 24)
+	msgID[5] = byte(now >> 16)
+	msgID[6] = byte(now >> 8)
+	msgID[7] = byte(now)
+	// sequence
+	seq := uint64(len(s.messages[recipientID]))
+	msgID[8] = byte(seq >> 56)
+	msgID[9] = byte(seq >> 48)
+	msgID[10] = byte(seq >> 40)
+	msgID[11] = byte(seq >> 32)
+	msgID[12] = byte(seq >> 24)
+	msgID[13] = byte(seq >> 16)
+	msgID[14] = byte(seq >> 8)
+	msgID[15] = byte(seq)
+	// random
+	if _, err := rand.Read(msgID[16:]); err != nil {
+		return nil, fmt.Errorf("generate message ID: %w", err)
 	}
 
 	msg := &Message{
-		QueueID: recipientID,
-		Flags:   flags,
-		Body:    make([]byte, len(body)),
+		ID:        msgID,
+		QueueID:   recipientID,
+		Timestamp: now / 1e9, // seconds
+		Flags:     flags,
+		Body:      make([]byte, len(body)),
 	}
 	copy(msg.Body, body)
 
 	s.messages[recipientID] = append(s.messages[recipientID], msg)
-	return nil
+	return msg, nil
 }
 
 func (s *MemoryStore) PopMessage(recipientID [24]byte) (*Message, error) {
