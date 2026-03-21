@@ -1,6 +1,9 @@
 package config
 
 import (
+	"fmt"
+	"os"
+	"strconv"
 	"time"
 )
 
@@ -63,10 +66,77 @@ type MetricsConfig struct {
 	Address string
 }
 
-// Load returns the server configuration
+// Overrides holds CLI flag values that override defaults and env vars.
+// Empty string means "not set" (use env or default).
+type Overrides struct {
+	Host    string
+	SMPPort string
+	GRPPort string
+	DataDir string
+}
+
+// Load returns the server configuration with env var defaults.
 // TODO: implement koanf-based config loading from YAML file
 func Load() (*Config, error) {
-	return DefaultConfig(), nil
+	return LoadWithOverrides(Overrides{})
+}
+
+// LoadWithOverrides returns config applying: defaults < env vars < overrides.
+func LoadWithOverrides(o Overrides) (*Config, error) {
+	cfg := DefaultConfig()
+
+	// Apply env vars
+	if v := os.Getenv("GORELAY_SMP_PORT"); v != "" {
+		port, err := parsePort(v, "GORELAY_SMP_PORT")
+		if err != nil {
+			return nil, err
+		}
+		cfg.SMP.Address = fmt.Sprintf(":%d", port)
+	}
+	if v := os.Getenv("GORELAY_GRP_PORT"); v != "" {
+		port, err := parsePort(v, "GORELAY_GRP_PORT")
+		if err != nil {
+			return nil, err
+		}
+		cfg.GRP.Address = fmt.Sprintf(":%d", port)
+	}
+
+	// Apply CLI overrides (highest precedence)
+	if o.Host != "" {
+		cfg.Server.Hostname = o.Host
+	}
+	if o.SMPPort != "" {
+		port, err := parsePort(o.SMPPort, "--smp-port")
+		if err != nil {
+			return nil, err
+		}
+		cfg.SMP.Address = fmt.Sprintf(":%d", port)
+	}
+	if o.GRPPort != "" {
+		port, err := parsePort(o.GRPPort, "--grp-port")
+		if err != nil {
+			return nil, err
+		}
+		cfg.GRP.Address = fmt.Sprintf(":%d", port)
+	}
+	if o.DataDir != "" {
+		cfg.Server.DataDir = o.DataDir
+		cfg.Store.Path = o.DataDir + "/store"
+	}
+
+	return cfg, nil
+}
+
+// parsePort validates a port string and returns the port number.
+func parsePort(s string, source string) (int, error) {
+	port, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid port for %s: %q", source, s)
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("port out of range for %s: %d", source, port)
+	}
+	return port, nil
 }
 
 // DefaultConfig returns sensible defaults for development

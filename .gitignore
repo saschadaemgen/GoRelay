@@ -7,8 +7,8 @@
 *.test
 *.out
 vendor/
-gorelay
-gorelay-arm64
+/gorelay
+/gorelay-arm64
 
 # Docusaurus
 wiki/node_modules/
