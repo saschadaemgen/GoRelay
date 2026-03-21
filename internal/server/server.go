@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -318,6 +321,8 @@ func (s *Server) dispatch(c *Client, cmd common.Command) common.Response {
 			Type:          common.CmdPONG,
 			CorrelationID: cmd.CorrelationID,
 		}
+	case common.CmdNEW:
+		return s.handleNEW(c, cmd)
 	default:
 		// TODO: implement all command handlers
 		return common.Response{
@@ -325,6 +330,70 @@ func (s *Server) dispatch(c *Client, cmd common.Command) common.Response {
 			CorrelationID: cmd.CorrelationID,
 			ErrorCode:     common.ErrInternal,
 		}
+	}
+}
+
+// handleNEW creates a new queue and returns IDS with recipientID, senderID,
+// and server DH public key. Implicitly subscribes the creating connection.
+func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
+	errResp := common.Response{
+		Type:          common.CmdERR,
+		CorrelationID: cmd.CorrelationID,
+	}
+
+	// Parse recipient public key from command body
+	// Body format: recipientKey (ed25519 public key, 32 bytes)
+	if len(cmd.Body) < ed25519.PublicKeySize {
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+
+	recipientKey := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	copy(recipientKey, cmd.Body[:ed25519.PublicKeySize])
+
+	// CreateQueue handles idempotency internally
+	q, err := s.store.CreateQueue(recipientKey)
+	if err != nil {
+		slog.Error("create queue failed", "err", err)
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+
+	// Generate server DH keypair if not already set (new queue)
+	if q.ServerDHPubKey == nil {
+		dhPriv, dhErr := ecdh.X25519().GenerateKey(rand.Reader)
+		if dhErr != nil {
+			slog.Error("generate server DH key failed", "err", dhErr)
+			errResp.ErrorCode = common.ErrInternal
+			return errResp
+		}
+		q.ServerDHPubKey = dhPriv.PublicKey().Bytes()
+		q.ServerDHSecret = dhPriv.Bytes()
+	}
+
+	// Implicit subscription: register this connection for the new queue
+	oldSub := s.subHub.Subscribe(q.RecipientID, c)
+	c.subscriptions[q.RecipientID] = true
+	if oldSub != nil && oldSub != c {
+		// Send END to displaced subscriber
+		oldSub.sndQ <- common.Response{
+			Type:        common.CmdEND,
+			HasEntityID: true,
+			EntityID:    q.RecipientID,
+		}
+	}
+
+	// Build IDS response body:
+	//   recipientID (24 bytes) + senderID (24 bytes) + serverDHPubKey (32 bytes)
+	idsBody := make([]byte, 0, 24+24+32)
+	idsBody = append(idsBody, q.RecipientID[:]...)
+	idsBody = append(idsBody, q.SenderID[:]...)
+	idsBody = append(idsBody, q.ServerDHPubKey...)
+
+	return common.Response{
+		Type:          common.CmdIDS,
+		CorrelationID: cmd.CorrelationID,
+		Body:          idsBody,
 	}
 }
 

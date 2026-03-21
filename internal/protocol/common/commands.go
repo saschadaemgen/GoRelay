@@ -107,6 +107,9 @@ func (r Response) Serialize() []byte {
 	switch r.Type {
 	case CmdERR:
 		transmission = append(transmission, r.ErrorCode)
+	case CmdIDS:
+		// IDS body is pre-encoded in r.Body
+		transmission = append(transmission, r.Body...)
 	case CmdMSG:
 		transmission = append(transmission, r.MessageID[:]...)
 		// timestamp (8 bytes)

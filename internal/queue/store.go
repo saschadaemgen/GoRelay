@@ -2,7 +2,10 @@ package queue
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/subtle"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -16,6 +19,7 @@ var (
 type Store interface {
 	CreateQueue(recipientKey ed25519.PublicKey) (*Queue, error)
 	GetQueue(recipientID [24]byte) (*Queue, error)
+	FindQueueByRecipientKey(recipientKey ed25519.PublicKey) (*Queue, error)
 	DeleteQueue(recipientID [24]byte) error
 	PushMessage(senderID [24]byte, flags byte, body []byte) error
 	PopMessage(recipientID [24]byte) (*Message, error)
@@ -25,12 +29,17 @@ type Store interface {
 
 // Queue represents a message queue
 type Queue struct {
-	RecipientID  [24]byte
-	SenderID     [24]byte
-	RecipientKey ed25519.PublicKey
-	Status       byte
-	CreatedAt    time.Time
+	RecipientID    [24]byte
+	SenderID       [24]byte
+	RecipientKey   ed25519.PublicKey
+	ServerDHPubKey []byte // X25519 public key (32 bytes)
+	ServerDHSecret []byte // X25519 private key (32 bytes) - zeroed after use
+	Status         byte
+	CreatedAt      time.Time
 }
+
+// StatusActive indicates the queue is accepting messages
+const StatusActive byte = 0x01
 
 // Message represents a stored message
 type Message struct {
@@ -44,7 +53,8 @@ type Message struct {
 // MemoryStore is an in-memory queue store for development and testing
 type MemoryStore struct {
 	mu       sync.RWMutex
-	queues   map[[24]byte]*Queue
+	queues   map[[24]byte]*Queue       // recipientID -> Queue
+	senders  map[[24]byte][24]byte     // senderID -> recipientID
 	messages map[[24]byte][]*Message
 }
 
@@ -52,6 +62,7 @@ type MemoryStore struct {
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		queues:   make(map[[24]byte]*Queue),
+		senders:  make(map[[24]byte][24]byte),
 		messages: make(map[[24]byte][]*Message),
 	}
 }
@@ -60,13 +71,33 @@ func (s *MemoryStore) CreateQueue(recipientKey ed25519.PublicKey) (*Queue, error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Idempotency: check if a queue with this recipientKey already exists
+	for _, q := range s.queues {
+		if subtle.ConstantTimeCompare(q.RecipientKey, recipientKey) == 1 {
+			return q, nil
+		}
+	}
+
+	recipientID, err := generateUniqueID(s.queues)
+	if err != nil {
+		return nil, fmt.Errorf("generate recipient ID: %w", err)
+	}
+
+	senderID, err := generateUniqueSenderID(s.senders, recipientID)
+	if err != nil {
+		return nil, fmt.Errorf("generate sender ID: %w", err)
+	}
+
 	q := &Queue{
+		RecipientID:  recipientID,
+		SenderID:     senderID,
 		RecipientKey: recipientKey,
+		Status:       StatusActive,
 		CreatedAt:    time.Now(),
 	}
-	// Generate random IDs
-	// TODO: use crypto/rand for real IDs
-	s.queues[q.RecipientID] = q
+
+	s.queues[recipientID] = q
+	s.senders[senderID] = recipientID
 	return q, nil
 }
 
@@ -81,10 +112,27 @@ func (s *MemoryStore) GetQueue(recipientID [24]byte) (*Queue, error) {
 	return q, nil
 }
 
+func (s *MemoryStore) FindQueueByRecipientKey(recipientKey ed25519.PublicKey) (*Queue, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, q := range s.queues {
+		if subtle.ConstantTimeCompare(q.RecipientKey, recipientKey) == 1 {
+			return q, nil
+		}
+	}
+	return nil, ErrNoQueue
+}
+
 func (s *MemoryStore) DeleteQueue(recipientID [24]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	q, ok := s.queues[recipientID]
+	if !ok {
+		return nil // idempotent
+	}
+	delete(s.senders, q.SenderID)
 	delete(s.queues, recipientID)
 	delete(s.messages, recipientID)
 	return nil
@@ -94,12 +142,19 @@ func (s *MemoryStore) PushMessage(senderID [24]byte, flags byte, body []byte) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// TODO: look up recipientID from senderID
-	msg := &Message{
-		Flags: flags,
-		Body:  body,
+	recipientID, ok := s.senders[senderID]
+	if !ok {
+		return ErrNoQueue
 	}
-	s.messages[senderID] = append(s.messages[senderID], msg)
+
+	msg := &Message{
+		QueueID: recipientID,
+		Flags:   flags,
+		Body:    make([]byte, len(body)),
+	}
+	copy(msg.Body, body)
+
+	s.messages[recipientID] = append(s.messages[recipientID], msg)
 	return nil
 }
 
@@ -120,7 +175,7 @@ func (s *MemoryStore) AckMessage(recipientID [24]byte, msgID [24]byte) error {
 
 	msgs, ok := s.messages[recipientID]
 	if !ok || len(msgs) == 0 {
-		return nil
+		return nil // idempotent
 	}
 	s.messages[recipientID] = msgs[1:]
 	return nil
@@ -128,4 +183,36 @@ func (s *MemoryStore) AckMessage(recipientID [24]byte, msgID [24]byte) error {
 
 func (s *MemoryStore) Close() error {
 	return nil
+}
+
+// generateUniqueID generates a random 24-byte ID that doesn't collide with existing queue keys.
+func generateUniqueID(existing map[[24]byte]*Queue) ([24]byte, error) {
+	for attempts := 0; attempts < 10; attempts++ {
+		var id [24]byte
+		if _, err := rand.Read(id[:]); err != nil {
+			return id, fmt.Errorf("crypto/rand: %w", err)
+		}
+		if _, exists := existing[id]; !exists {
+			return id, nil
+		}
+	}
+	return [24]byte{}, errors.New("failed to generate unique ID after 10 attempts")
+}
+
+// generateUniqueSenderID generates a random 24-byte ID that doesn't collide with
+// existing sender IDs and is different from the given recipientID.
+func generateUniqueSenderID(existing map[[24]byte][24]byte, recipientID [24]byte) ([24]byte, error) {
+	for attempts := 0; attempts < 10; attempts++ {
+		var id [24]byte
+		if _, err := rand.Read(id[:]); err != nil {
+			return id, fmt.Errorf("crypto/rand: %w", err)
+		}
+		if id == recipientID {
+			continue
+		}
+		if _, exists := existing[id]; !exists {
+			return id, nil
+		}
+	}
+	return [24]byte{}, errors.New("failed to generate unique sender ID after 10 attempts")
 }
