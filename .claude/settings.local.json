@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "MultiEdit",
+      "Write",
+      "Bash(*)",
+      "Bash(taskkill //F //IM \"go.exe\")",
+      "Bash(taskkill //F //IM \"handshake.test.exe\")",
+      "Bash(git merge:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(go get:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(git branch:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:hackage.haskell.org)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(sudo *)"
+    ]
+  }
+}

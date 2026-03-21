@@ -93,6 +93,20 @@ Phase 1 is COMPLETE. The server compiles, runs, and passes 40+ tests:
 - QueueStore interface with both MemoryStore (tests) and BadgerStore (production)
 - 40+ tests passing including 13 integration tests
 
+## Development Roadmap
+
+- Phase 0: Research and Planning - COMPLETE
+- Phase 1: SMP Skeleton (TLS, Block Framing, Handshake, Queue Ops, BadgerDB) - COMPLETE
+- Phase 2: Production Hardening (DEL, OFF, Timeouts, Metrics, Rate Limiting, Docker) - CURRENT
+- Phase 3: SMP Compatibility Testing (verify against official SimpleX Chat app)
+- Phase 4: GRP Protocol (Noise transport, hybrid PQC key exchange)
+- Phase 5: Advanced Security (two-hop relay routing, cover traffic, queue rotation)
+- Phase 6: Triple Shield
+  - 6a: Zero-Knowledge Proofs for queue authentication (Schnorr DLOG via Fiat-Shamir)
+  - 6b: Shamir's Secret Sharing across multiple servers (2-of-3 default)
+  - 6c: Steganographic Transport (pluggable transports: HTTPS, WebSocket, meek, obfs4)
+  - Read: docs/research/12-triple-shield.md
+
 ## Phase 1 Implementation Plan (COMPLETE)
 
 All 9 tasks completed on separate feature branches, squash-merged to main:
@@ -107,7 +121,7 @@ All 9 tasks completed on separate feature branches, squash-merged to main:
 ### Task 8: Integration Tests - COMPLETE
 ### Task 9: BadgerDB Store - COMPLETE
 
-## Phase 2 Implementation Plan
+## Phase 2 Implementation Plan (Current)
 
 ### Task 1: DEL Command
 - Delete queue by recipientID with Ed25519 signature verification
@@ -204,7 +218,8 @@ Source: github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging
 Read these files for implementation details:
 1. docs/research/01-smp-server-analysis.md - How SMP works
 2. docs/research/02-go-server-architecture.md - Go patterns
-3. docs/protocol/05-message-format.md - Byte-level encoding
-4. docs/protocol/06-queue-operations.md - Command semantics
-5. docs/architecture/01-overview.md - Package structure
-6. docs/architecture/03-queue-store.md - BadgerDB schema
+3. docs/research/12-triple-shield.md - Phase 6 Triple Shield architecture
+4. docs/protocol/05-message-format.md - Byte-level encoding
+5. docs/protocol/06-queue-operations.md - Command semantics
+6. docs/architecture/01-overview.md - Package structure
+7. docs/architecture/03-queue-store.md - BadgerDB schema
