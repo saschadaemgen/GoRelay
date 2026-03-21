@@ -55,6 +55,7 @@ type Command struct {
 	EntityID      [24]byte
 	HasEntityID   bool
 	Signature     []byte
+	SignedData    []byte // bytes covered by the signature (session_id through command+body)
 	Body          []byte
 }
 
@@ -189,6 +190,9 @@ func parseTransmission(data []byte) (Command, error) {
 	}
 	offset += sigLen
 
+	// Everything from here to the end is the signed data
+	signedStart := offset
+
 	// Session ID (skip for now)
 	if offset >= len(data) {
 		return cmd, ErrBlockTooShort
@@ -231,6 +235,10 @@ func parseTransmission(data []byte) (Command, error) {
 		cmd.Body = make([]byte, len(data)-offset)
 		copy(cmd.Body, data[offset:])
 	}
+
+	// Capture signed data (everything after signature)
+	cmd.SignedData = make([]byte, len(data)-signedStart)
+	copy(cmd.SignedData, data[signedStart:])
 
 	return cmd, nil
 }

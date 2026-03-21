@@ -323,6 +323,8 @@ func (s *Server) dispatch(c *Client, cmd common.Command) common.Response {
 		}
 	case common.CmdNEW:
 		return s.handleNEW(c, cmd)
+	case common.CmdSUB:
+		return s.handleSUB(c, cmd)
 	default:
 		// TODO: implement all command handlers
 		return common.Response{
@@ -394,6 +396,94 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 		Type:          common.CmdIDS,
 		CorrelationID: cmd.CorrelationID,
 		Body:          idsBody,
+	}
+}
+
+// handleSUB subscribes a connection to an existing queue.
+// Verifies Ed25519 signature, enforces one-subscriber-per-queue,
+// and delivers a pending message if available.
+func (s *Server) handleSUB(c *Client, cmd common.Command) common.Response {
+	errResp := common.Response{
+		Type:          common.CmdERR,
+		CorrelationID: cmd.CorrelationID,
+	}
+
+	if !cmd.HasEntityID {
+		errResp.ErrorCode = common.ErrNoQueue
+		return errResp
+	}
+
+	// Look up queue by recipientID (entityID)
+	q, err := s.store.GetQueue(cmd.EntityID)
+	if err != nil {
+		errResp.ErrorCode = common.ErrNoQueue
+		return errResp
+	}
+
+	// Verify Ed25519 signature against queue's recipientKey
+	if len(cmd.Signature) == 0 || len(cmd.SignedData) == 0 {
+		errResp.ErrorCode = common.ErrAuth
+		return errResp
+	}
+
+	if !ed25519.Verify(q.RecipientKey, cmd.SignedData, cmd.Signature) {
+		errResp.ErrorCode = common.ErrAuth
+		return errResp
+	}
+
+	// Same connection already subscribed - no-op, return OK
+	currentSub := s.subHub.GetSubscriber(q.RecipientID)
+	if currentSub == c {
+		// Still check for pending message
+		msg, msgErr := s.store.PopMessage(q.RecipientID)
+		if msgErr == nil && msg != nil {
+			return common.Response{
+				Type:          common.CmdMSG,
+				CorrelationID: cmd.CorrelationID,
+				HasEntityID:   true,
+				EntityID:      q.RecipientID,
+				MessageID:     msg.ID,
+				Timestamp:     msg.Timestamp,
+				Flags:         msg.Flags,
+				Body:          msg.Body,
+			}
+		}
+		return common.Response{
+			Type:          common.CmdOK,
+			CorrelationID: cmd.CorrelationID,
+		}
+	}
+
+	// Subscribe (atomically swaps old subscriber)
+	oldSub := s.subHub.Subscribe(q.RecipientID, c)
+	c.subscriptions[q.RecipientID] = true
+	if oldSub != nil && oldSub != c {
+		// Send END to displaced subscriber
+		oldSub.sndQ <- common.Response{
+			Type:        common.CmdEND,
+			HasEntityID: true,
+			EntityID:    q.RecipientID,
+		}
+	}
+
+	// Check for pending message
+	msg, msgErr := s.store.PopMessage(q.RecipientID)
+	if msgErr == nil && msg != nil {
+		return common.Response{
+			Type:          common.CmdMSG,
+			CorrelationID: cmd.CorrelationID,
+			HasEntityID:   true,
+			EntityID:      q.RecipientID,
+			MessageID:     msg.ID,
+			Timestamp:     msg.Timestamp,
+			Flags:         msg.Flags,
+			Body:          msg.Body,
+		}
+	}
+
+	return common.Response{
+		Type:          common.CmdOK,
+		CorrelationID: cmd.CorrelationID,
 	}
 }
 
