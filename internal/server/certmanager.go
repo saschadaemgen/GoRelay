@@ -62,7 +62,7 @@ func NewCertManager(dataDir string) (*CertManager, error) {
 }
 
 // Fingerprint returns the base64url-encoded (no padding) SHA-256 hash
-// of the CA's Ed25519 public key.
+// of the full DER-encoded CA certificate, matching SimpleX Chat expectations.
 func (cm *CertManager) Fingerprint() string {
 	return cm.fingerprint
 }
@@ -159,7 +159,10 @@ func (cm *CertManager) generateCA() error {
 
 	cm.caCert = caCert
 	cm.caKey = priv
-	cm.fingerprint = computeFingerprint(pub)
+	cm.fingerprint = computeCertFingerprint(caCert)
+
+	pubKeyHash := computePubKeyFingerprint(pub)
+	slog.Info("fingerprint debug", "cert_hash", cm.fingerprint, "pubkey_hash", pubKeyHash)
 
 	return nil
 }
@@ -204,7 +207,10 @@ func (cm *CertManager) loadCA() error {
 
 	cm.caCert = caCert
 	cm.caKey = edKey
-	cm.fingerprint = computeFingerprint(edKey.Public().(ed25519.PublicKey))
+	cm.fingerprint = computeCertFingerprint(caCert)
+
+	pubKeyHash := computePubKeyFingerprint(edKey.Public().(ed25519.PublicKey))
+	slog.Info("fingerprint debug", "cert_hash", cm.fingerprint, "pubkey_hash", pubKeyHash)
 
 	return nil
 }
@@ -321,7 +327,17 @@ func (cm *CertManager) loadOnlineCert() error {
 
 // --- helpers ---
 
-func computeFingerprint(pub ed25519.PublicKey) string {
+// computeCertFingerprint returns SHA256 of the full DER-encoded certificate,
+// base64url-encoded without padding. This matches the SimpleX Chat / SimplexMQ
+// fingerprint computation (X509.Validation.Fingerprint.getFingerprint).
+func computeCertFingerprint(cert *x509.Certificate) string {
+	hash := sha256.Sum256(cert.Raw)
+	return base64.RawURLEncoding.EncodeToString(hash[:])
+}
+
+// computePubKeyFingerprint returns SHA256 of the raw Ed25519 public key bytes,
+// base64url-encoded without padding. Used only for debug logging.
+func computePubKeyFingerprint(pub ed25519.PublicKey) string {
 	hash := sha256.Sum256([]byte(pub))
 	return base64.RawURLEncoding.EncodeToString(hash[:])
 }

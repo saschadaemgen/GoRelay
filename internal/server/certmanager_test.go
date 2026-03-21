@@ -2,7 +2,9 @@ package server
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"os"
 	"path/filepath"
@@ -189,6 +191,23 @@ func TestSMPURI(t *testing.T) {
 	expected := "smp://" + cm.Fingerprint() + "@relay.example.com:5223"
 	if uri != expected {
 		t.Fatalf("SMPURI: got %q, want %q", uri, expected)
+	}
+}
+
+func TestFingerprintMatchesCertDERHash(t *testing.T) {
+	dir := t.TempDir()
+
+	cm, err := NewCertManager(dir)
+	if err != nil {
+		t.Fatalf("NewCertManager: %v", err)
+	}
+
+	// Manually compute SHA256 of the full DER-encoded CA certificate
+	hash := sha256.Sum256(cm.CACert().Raw)
+	expected := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	if cm.Fingerprint() != expected {
+		t.Fatalf("fingerprint mismatch: got %q, want %q", cm.Fingerprint(), expected)
 	}
 }
 
