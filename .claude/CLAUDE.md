@@ -1,206 +1,203 @@
-# CLAUDE.md - GoRelay Development Guide
+# GoRelay - Claude Code Instructions
 
-## Project Overview
+## Project
 
-GoRelay is a dual-protocol encrypted relay server written in Go. It implements both SMP (SimpleX Messaging Protocol) for backward compatibility and GRP (GoRelay Protocol) for enhanced security with Noise-based transport, mandatory post-quantum cryptography, two-hop relay routing, and cover traffic.
+GoRelay is a dual-protocol encrypted relay server written in Go.
+- Port 5223: SMP (SimpleX Messaging Protocol) for SimpleX Chat compatibility
+- Port 7443: GRP (GoRelay Protocol) with Noise transport, mandatory post-quantum crypto, two-hop relay routing
+- Both protocols share the same internal queue store
+- Repository: github.com/saschadaemgen/GoRelay
+- License: AGPL-3.0
+- Author: Sascha Daemgen, IT and More Systems, Recklinghausen
 
-GoRelay is part of the SimpleGo ecosystem by IT and More Systems, Recklinghausen, Germany.
+## Rules (NON-NEGOTIABLE)
 
-- **Repository:** github.com/saschadaemgen/GoRelay
-- **License:** AGPL-3.0
-- **Language:** Go 1.24+
-- **Author:** Sascha Daemgen
+### Git
+- Conventional Commits ONLY: `feat(scope): description`, `fix(scope): description`
+- Valid types: feat, fix, docs, test, refactor, ci, chore
+- Valid scopes: core, smp, grp, store, relay, config, ci, wiki
+- NEVER commit directly to main - always feature/* branches
+- Squash-merge feature branches to main
+- NEVER change version numbers without explicit permission
 
-## Architecture Overview
+### Code Style
+- NEVER use em dashes - use regular hyphens or rewrite the sentence
+- All code, comments, commits, and documentation in English
+- Use `log/slog` for logging - NEVER `fmt.Println` or `log.Printf`
+- NEVER log IP addresses, queue IDs, message content, or any user metadata
+- Use `io.ReadFull` for all network reads - NEVER plain `conn.Read`
+- Handle all errors explicitly - NEVER use `_` to discard errors
+- Use `crypto/subtle.ConstantTimeCompare` for all secret comparisons
+- Zero all key material after use with explicit zeroing loops
 
-```
-GoRelay/
-├── cmd/gorelay/          Entry point (main.go)
-├── internal/
-│   ├── server/           TLS/Noise listeners, connection handler
-│   ├── protocol/         SMP + GRP frame parsing, command dispatch
-│   ├── queue/            BadgerDB queue store, subscription hub
-│   └── config/           YAML configuration via koanf
-├── configs/              Default config files
-├── docs/                 All documentation (Markdown, readable without Docusaurus)
-└── wiki/                 Docusaurus build system only
-```
+### Architecture
+- Three goroutines per connection: receiver, processor, sender
+- Fixed 16,384-byte blocks for ALL wire communication
+- QueueStore interface for all persistence (BadgerDB in production, memory for tests)
+- SubscriptionHub with sync.Map for queue-to-client routing
+- smp/ and grp/ packages NEVER import each other - both import common/
 
-## Dual-Protocol Design
-
-- **Port 5223:** SMP protocol (TLS 1.3, ALPN "smp/1") for SimpleX compatibility
-- **Port 7443:** GRP protocol (Noise IK/XX, X25519+ML-KEM-768 hybrid)
-- Both frontends share the same QueueStore and SubscriptionHub
-- Messages sent via SMP are deliverable to GRP subscribers and vice versa
-
-## Technology Stack (Do NOT deviate without explicit approval)
-
-| Component | Library | Import Path |
-|-----------|---------|-------------|
-| TLS (SMP) | Go stdlib | `crypto/tls` |
-| Transport (GRP) | flynn/noise v1.1.0 | `github.com/flynn/noise` |
-| Post-Quantum | Go stdlib ML-KEM | `crypto/mlkem` |
-| Persistence | BadgerDB v4 | `github.com/dgraph-io/badger/v4` |
-| Configuration | koanf v2 | `github.com/knadh/koanf/v2` |
-| Logging | Go stdlib slog | `log/slog` |
-| Metrics | Prometheus | `github.com/prometheus/client_golang` |
-| Rate Limiting | x/time/rate | `golang.org/x/time/rate` |
-| Crypto (general) | Go stdlib | `crypto/*` |
-
-## Code Style and Conventions
-
-### Go Code
-
-- Standard `gofmt` formatting, no exceptions
-- `go vet` and `staticcheck` must pass with zero warnings
-- Error handling: always check errors, never use `_` for error returns
-- Context: pass `context.Context` as first parameter to functions that do I/O
-- Naming: follow Go conventions (MixedCaps, not snake_case)
-- Comments: exported functions must have doc comments
-- No global mutable state - pass dependencies via struct fields
-- Tests: table-driven tests preferred, use `testify` only if necessary
-
-### Git Commits
-
-**Conventional Commits format is MANDATORY:**
-
-```
-type(scope): description
-
-feat(transport): implement TLS 1.3 listener with ALPN
-fix(queue): prevent race condition in subscription takeover
-docs(research): add Haskell vs Go comparison
-test(protocol): add block framing round-trip tests
-refactor(server): extract connection lifecycle into separate file
-chore(deps): update BadgerDB to v4.3.0
-```
-
-Valid types: feat, fix, docs, test, refactor, chore, perf, ci
-Valid scopes: transport, protocol, queue, server, config, docs, ci, deps
-
-### NEVER Do These Things
-
-- Never use em dashes (---) anywhere. Use hyphens (-) or rewrite the sentence.
-- Never change version numbers without explicit permission from Sascha.
-- Never add dependencies not listed in the technology stack without asking.
-- Never commit directly to main. Always use feature branches.
-- Never log message content, queue contents, or IP-to-queue mappings.
-- Never store plaintext keys in logs, even in debug mode.
-
-## Branching Strategy
-
-```
-main              (protected, only squash-merges)
-├── feature/*     (new features: feature/tls-listener)
-├── fix/*         (bug fixes: fix/subscription-race)
-├── docs/*        (documentation: docs/research-haskell)
-└── refactor/*    (refactoring: refactor/extract-framing)
-```
-
-Workflow:
-1. Create feature branch from main
-2. Implement, test, commit freely (messy commits are fine on feature branches)
-3. Ensure `go build ./...` succeeds
-4. Ensure `go test ./...` passes
-5. Squash-merge to main with a clean Conventional Commit message
-6. Delete the feature branch
-
-## Build and Test Commands
+## Build and Test
 
 ```bash
-# Build
 go build -o gorelay ./cmd/gorelay
-
-# Build static binary (for Docker/deployment)
-CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o gorelay ./cmd/gorelay
-
-# Run tests
-go test ./...
-
-# Run tests with race detector
 go test -race ./...
-
-# Run linter
-go vet ./...
-
-# Format code
-gofmt -w .
-
-# Cross-compile for ARM (Raspberry Pi)
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o gorelay-arm64 ./cmd/gorelay
 ```
 
-## SMP Protocol Key Facts
+## Technology Stack (LOCKED)
 
-- Fixed 16,384-byte block framing (SMP_BLOCK_SIZE)
-- First 2 bytes: content length (uint16 big-endian)
-- Remaining: content + '#' padding
-- Use `io.ReadFull` for reads - never plain `conn.Read`
-- TLS 1.3 with ALPN "smp/1"
-- Server certificate fingerprint = server identity
-- Commands: NEW, SUB, SEND, MSG, ACK, DEL, PING, PONG, END
-- One subscription per queue per socket - new SUB sends END to old socket
-- NEW creates queue already subscribed - subsequent SUB is noop
-- All state-changing commands must be idempotent (handle lost responses)
-- PING/PONG keep-alive essential - without it server drops subscription
+| Component | Choice |
+|---|---|
+| Language | Go 1.26+ |
+| Transport (SMP) | crypto/tls (stdlib) |
+| Transport (GRP) | flynn/noise v1.1.0 |
+| Post-Quantum | crypto/mlkem (stdlib, FIPS 203) |
+| Persistence | BadgerDB v4 |
+| Configuration | koanf v2 |
+| Logging | log/slog (stdlib) |
+| Metrics | prometheus/client_golang |
+| Rate Limiting | golang.org/x/time/rate |
 
-## Three Goroutines Per Connection
+## Package Structure
 
-Every client connection spawns three goroutines:
-1. **Receiver:** reads 16KB blocks, parses, puts commands into rcvQ channel
-2. **Sender:** reads from sndQ channel, serializes into 16KB blocks, writes to TLS
-3. **Processor:** reads from rcvQ, dispatches against queue store, writes to sndQ
+```
+cmd/gorelay/                    Entry point, CLI, signal handling
+internal/config/                Configuration loading (koanf)
+internal/server/                Server, Client, SubscriptionHub
+internal/protocol/common/       Block framing, command types (shared)
+internal/protocol/smp/          SMP-specific handlers
+internal/protocol/grp/          GRP-specific handlers
+internal/queue/                 QueueStore interface + implementations
+internal/relay/                 Relay-to-relay forwarding (Phase 5)
+```
 
-Use `context.WithCancel` + `sync.WaitGroup` - if any goroutine exits, cancel propagates to all.
+## Current State
 
-## Security Requirements
+The skeleton compiles and runs:
+- Dual-port listener works (SMP TLS on :5223, GRP TCP on :7443)
+- Three-goroutine-per-connection model implemented
+- 16 KB block framing works (ReadBlock/WriteBlock)
+- PING/PONG handler returns PONG
+- QueueStore interface defined with in-memory implementation
+- SubscriptionHub with sync.Map implemented
+- Unit tests for block framing pass
 
-- Zero-knowledge: server never decrypts message content
-- No metadata logging: no IPs, no connection times, no queue-to-IP mappings
-- Fixed 16KB blocks prevent traffic analysis by message size
-- Delete messages immediately on ACK
-- 48-hour default TTL, 7-day hard maximum for undelivered messages
-- Per-message encryption key with secure zeroing for cryptographic deletion
-- Rate limiting: 50 commands/sec with burst of 100 per connection
-- `conn.SetReadDeadline` on every read, `conn.SetWriteDeadline` on every write
+## Phase 1 Implementation Plan (Current)
+
+Complete these tasks IN ORDER on separate feature branches:
+
+### Task 1: go mod tidy
+- Run `go mod tidy` to generate go.sum
+- Branch: chore/go-mod-tidy
+- Commit: `chore(deps): generate go.sum with go mod tidy`
+
+### Task 2: TLS with SMP-Compatible CA Chain
+- Generate self-signed Ed25519 CA keypair during init
+- Sign online TLS cert with CA
+- Store CA and cert in data directory, persist across restarts
+- CA fingerprint is the server identity - MUST remain stable
+- Print SMP URI with CA fingerprint on startup: `smp://<fingerprint>@host:5223`
+- Read: docs/deployment/05-tls-certificates.md
+- Branch: feature/tls-ca-chain
+- Commit: `feat(smp): implement SMP-compatible TLS CA chain`
+
+### Task 3: SMP Version Handshake
+- After TLS, server sends version range (min=6, max=7) + server public key
+- Client responds with version + client public key + auth
+- Agree on highest mutual version
+- SMP protocol spec: github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md
+- Read: docs/research/01-smp-server-analysis.md (Connection Lifecycle section)
+- Branch: feature/smp-handshake
+- Commit: `feat(smp): implement version handshake`
+
+### Task 4: PING/PONG Verification
+- Verify full round-trip: client PING in 16 KB block, server PONG in 16 KB block
+- Proper '#' padding, proper length encoding
+- Write test that connects via TLS and exchanges PING/PONG
+- Branch: feature/ping-pong-test
+- Commit: `test(smp): add PING/PONG integration test`
+
+### Task 5: NEW Command
+- Generate random 24-byte recipientID and senderID using crypto/rand
+- Generate server DH keypair (X25519) for re-encryption
+- Store queue record
+- Return IDS response with both IDs and server DH public key
+- Implicitly subscribe creating connection
+- Must be idempotent
+- Read: docs/protocol/06-queue-operations.md
+- Branch: feature/queue-new
+- Commit: `feat(smp): implement NEW command with queue creation`
+
+### Task 6: SUB Command
+- Verify Ed25519 signature against queue's recipientKey
+- One-subscriber-per-queue rule: send END to old subscriber on takeover
+- If message pending, deliver via MSG immediately
+- If no message, respond OK
+- Branch: feature/queue-sub
+- Commit: `feat(smp): implement SUB command with subscription takeover`
+
+### Task 7: KEY + SEND/MSG/ACK
+- KEY: set sender public key (one-time, error on repeat)
+- SEND: verify sender signature, store message, deliver if subscriber exists
+- MSG: deliver oldest unACKed message, one at a time
+- ACK: delete message, deliver next if available
+- Branch: feature/message-delivery
+- Commit: `feat(smp): implement message delivery cycle (KEY, SEND, MSG, ACK)`
+
+### Task 8: Integration Tests
+- Test complete flow: NEW -> KEY -> SEND -> MSG -> ACK
+- Test subscription takeover (SUB from second connection, first gets END)
+- Test idempotency (retry NEW, retry ACK)
+- Test error cases (SEND before KEY, SUB on nonexistent queue)
+- Branch: feature/integration-tests
+- Commit: `test(smp): add integration tests for complete message flow`
+
+### Task 9: BadgerDB Store
+- Implement QueueStore interface with BadgerDB v4
+- Key schema per docs/architecture/03-queue-store.md
+- Native TTL for message expiry (48h default, 7d hard max)
+- Per-message symmetric key for cryptographic deletion
+- GC loop every 5 minutes
+- Run all existing tests against BadgerDB store
+- Branch: feature/badger-store
+- Commit: `feat(store): implement BadgerDB queue store with TTL and crypto deletion`
+
+## Critical Protocol Details
+
+### Block Framing
+```
+Block = payloadLength (2 bytes, uint16 BE) + payload + padding ('#' to 16384)
+ALWAYS exactly 16,384 bytes. No exceptions.
+ALWAYS io.ReadFull. NEVER conn.Read.
+```
+
+### SMP Version Negotiation
+```
+Current SMP versions: 6 and 7 (older versions discontinued)
+Server sends: min=6, max=7
+Client responds with its version range
+Agree on highest mutual version
+Source: github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md
+```
+
+### Subscription Rules
+- Only ONE connection per queue at any time
+- NEW creates implicit subscription
+- New SUB sends END to old subscriber
+- Messages delivered one at a time, wait for ACK
+
+### Idempotency
+- NEW with same key: return existing IDS
+- ACK for deleted message: return OK
+- DEL for deleted queue: return OK
+- SEND: deduplicate by correlationID within 5-minute window
 
 ## Documentation
 
-Documentation lives in `docs/` as pure Markdown, readable on GitHub without Docusaurus.
-Docusaurus build system lives in `wiki/` and points to `../docs`.
-
-Structure:
-- `docs/research/` - published research analysis
-- `docs/protocol/` - GRP formal specification
-- `docs/architecture/` - server internals
-- `docs/deployment/` - production guides
-- `docs/development/` - contributor guides
-- `docs/session-log/` - development history
-- `docs/images/banners/` - page banner images
-- `docs/images/diagrams/` - technical diagrams
-
-## Development Phases
-
-Phase 1: SMP Skeleton (TLS listener, block framing, handshake, PING/PONG)
-Phase 2: Queue Operations (BadgerDB, NEW/SUB/SEND/MSG/ACK/DEL)
-Phase 3: Production (config, logging, metrics, Docker, systemd)
-Phase 4: GRP Protocol (Noise transport, PQC key exchange)
-Phase 5: Advanced Security (two-hop relay, cover traffic, queue rotation)
-
-Always ask which phase we are working on before starting implementation.
-
-## Important Context
-
-- SimpleGo (C, ESP32) is the client device that connects to GoRelay
-- SimpleGo already speaks SMP and connects to SimpleX servers
-- GoRelay must be interoperable with SimpleGo's SMP implementation
-- The SMP protocol spec is at: github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md
-- SimpleGo's client implementation is at: C:\Espressif\projects\SimpleGo
-
-## Communication
-
-- Address Sascha as "mein Prinz" (never "Chef")
-- Chat communication is in German
-- All code, comments, documentation, and commits are in English
-- Ask before making assumptions about architecture or implementation decisions
-- If unsure about anything, ask first - never proceed silently on assumptions
+Read these files for implementation details:
+1. docs/research/01-smp-server-analysis.md - How SMP works
+2. docs/research/02-go-server-architecture.md - Go patterns
+3. docs/protocol/05-message-format.md - Byte-level encoding
+4. docs/protocol/06-queue-operations.md - Command semantics
+5. docs/architecture/01-overview.md - Package structure
+6. docs/architecture/03-queue-store.md - BadgerDB schema
