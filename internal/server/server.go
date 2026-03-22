@@ -364,11 +364,11 @@ func (s *Server) handleGRPConnection(ctx context.Context, conn net.Conn) {
 
 // receiver reads 16 KB blocks from the connection
 func (s *Server) receiver(ctx context.Context, c *Client) {
-	slog.Debug("receiver goroutine started")
+	slog.Info("receiver goroutine started")
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Debug("receiver: context cancelled")
+			slog.Info("receiver: context cancelled")
 			return
 		default:
 		}
@@ -376,7 +376,7 @@ func (s *Server) receiver(ctx context.Context, c *Client) {
 		c.conn.SetReadDeadline(common.ReadDeadline())
 		block, err := common.ReadBlock(c.conn)
 		if err != nil {
-			slog.Debug("receiver: read block failed", "err", err)
+			slog.Info("receiver: read block failed", "err", err)
 			return
 		}
 
@@ -384,18 +384,18 @@ func (s *Server) receiver(ctx context.Context, c *Client) {
 
 		cmds, err := common.ParsePayload(block)
 		if err != nil {
-			slog.Debug("receiver: parse error", "err", err, "first32", hex.EncodeToString(block[:min(32, len(block))]))
+			slog.Info("receiver: parse error", "err", err, "first32", hex.EncodeToString(block[:min(32, len(block))]))
 			continue
 		}
 
-		slog.Debug("receiver: parsed commands", "count", len(cmds))
+		slog.Info("receiver: parsed commands", "count", len(cmds))
 
 		for _, cmd := range cmds {
-			slog.Debug("receiver: dispatching command", "type", fmt.Sprintf("0x%02x", cmd.Type))
+			slog.Info("receiver: dispatching command", "type", fmt.Sprintf("0x%02x", cmd.Type))
 			select {
 			case c.rcvQ <- cmd:
 			case <-ctx.Done():
-				slog.Debug("receiver: context cancelled during dispatch")
+				slog.Info("receiver: context cancelled during dispatch")
 				return
 			}
 		}

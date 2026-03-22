@@ -403,10 +403,10 @@ func parseTextCommand(data []byte) (byte, []byte) {
 		}
 	}
 
-	// Unknown command - log first 20 bytes for debugging
+	// Unknown command - log first 40 bytes for debugging
 	n := len(data)
-	if n > 20 {
-		n = 20
+	if n > 40 {
+		n = 40
 	}
 	slog.Info("parseTextCommand: no tag match",
 		"first_bytes_hex", hex.EncodeToString(data[:n]),
