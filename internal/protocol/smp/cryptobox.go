@@ -52,27 +52,40 @@ func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, flag
 
 // simplexCryptoBox encrypts plaintext using the SimpleX custom XSalsa20 variant.
 //
-// SimpleX (via Haskell cryptonite) uses a different nonce splitting than standard NaCl:
+// SimpleX (via Haskell cryptonite) uses three key derivation steps:
 //
-//	Standard NaCl: HSalsa20(key, nonce[0:16]),  then Salsa20(subkey, nonce[16:24])
-//	SimpleX:       HSalsa20(key, nonce[8:24]),  then Salsa20(subkey, nonce[0:8])
+//	Step 1: HSalsa20(key, zeros[16])      -> subkey1   (cryptonite initialize)
+//	Step 2: HSalsa20(subkey1, nonce[8:24]) -> subkey2   (cryptonite derive)
+//	Step 3: Salsa20(subkey2, nonce[0:8])   -> keystream
+//
+// This differs from standard NaCl which skips step 1.
 //
 // Output: poly1305Tag(16) + ciphertext(len(plaintext))
 func simplexCryptoBox(key [32]byte, nonce [24]byte, plaintext []byte) []byte {
-	// Step 1: HSalsa20(key, nonce[8:24]) -> subkey
-	var subkey [32]byte
+	// Step 1: HSalsa20(key, zeros[16]) -> subkey1
+	var subkey1 [32]byte
+	var zeros16 [16]byte
+	salsa.HSalsa20(&subkey1, &zeros16, &key, &salsa.Sigma)
+
+	// Step 2: HSalsa20(subkey1, nonce[8:24]) -> subkey2
+	var subkey2 [32]byte
 	var hsInput [16]byte
 	copy(hsInput[:], nonce[8:24])
-	salsa.HSalsa20(&subkey, &hsInput, &key, &salsa.Sigma)
+	salsa.HSalsa20(&subkey2, &hsInput, &subkey1, &salsa.Sigma)
 
-	// Step 2: Salsa20 XOR with subkey and nonce[0:8]
+	// Zero subkey1 immediately
+	for i := range subkey1 {
+		subkey1[i] = 0
+	}
+
+	// Step 3: Salsa20 XOR with subkey2 and nonce[0:8]
 	// Prepend 32 zero bytes for Poly1305 key extraction
 	buf := make([]byte, 32+len(plaintext))
 	copy(buf[32:], plaintext)
 
 	var salsaNonce [8]byte
 	copy(salsaNonce[:], nonce[0:8])
-	salsa20.XORKeyStream(buf, buf, salsaNonce[:], &subkey)
+	salsa20.XORKeyStream(buf, buf, salsaNonce[:], &subkey2)
 
 	// First 32 bytes XORed with zeros = raw keystream = Poly1305 one-time key
 	var polyKey [32]byte
@@ -84,8 +97,8 @@ func simplexCryptoBox(key [32]byte, nonce [24]byte, plaintext []byte) []byte {
 	poly1305.Sum(&tag, ciphertext, &polyKey)
 
 	// Zero sensitive material
-	for i := range subkey {
-		subkey[i] = 0
+	for i := range subkey2 {
+		subkey2[i] = 0
 	}
 	for i := range polyKey {
 		polyKey[i] = 0
@@ -111,25 +124,35 @@ func SimplexCryptoBoxOpen(key [32]byte, nonce [24]byte, box []byte) ([]byte, boo
 	copy(tag[:], box[:16])
 	ciphertext := box[16:]
 
-	// Step 1: HSalsa20(key, nonce[8:24]) -> subkey
-	var subkey [32]byte
+	// Step 1: HSalsa20(key, zeros[16]) -> subkey1
+	var subkey1 [32]byte
+	var zeros16 [16]byte
+	salsa.HSalsa20(&subkey1, &zeros16, &key, &salsa.Sigma)
+
+	// Step 2: HSalsa20(subkey1, nonce[8:24]) -> subkey2
+	var subkey2 [32]byte
 	var hsInput [16]byte
 	copy(hsInput[:], nonce[8:24])
-	salsa.HSalsa20(&subkey, &hsInput, &key, &salsa.Sigma)
+	salsa.HSalsa20(&subkey2, &hsInput, &subkey1, &salsa.Sigma)
 
-	// Step 2: Generate Poly1305 key by encrypting 32 zero bytes
+	// Zero subkey1 immediately
+	for i := range subkey1 {
+		subkey1[i] = 0
+	}
+
+	// Step 3: Generate Poly1305 key by encrypting 32 zero bytes
 	var salsaNonce [8]byte
 	copy(salsaNonce[:], nonce[0:8])
 
 	polyKeyBuf := make([]byte, 32)
-	salsa20.XORKeyStream(polyKeyBuf, polyKeyBuf, salsaNonce[:], &subkey)
+	salsa20.XORKeyStream(polyKeyBuf, polyKeyBuf, salsaNonce[:], &subkey2)
 	var polyKey [32]byte
 	copy(polyKey[:], polyKeyBuf)
 
 	// Verify Poly1305 tag
 	if !poly1305.Verify(&tag, ciphertext, &polyKey) {
-		for i := range subkey {
-			subkey[i] = 0
+		for i := range subkey2 {
+			subkey2[i] = 0
 		}
 		for i := range polyKey {
 			polyKey[i] = 0
@@ -141,13 +164,13 @@ func SimplexCryptoBoxOpen(key [32]byte, nonce [24]byte, box []byte) ([]byte, boo
 	// We need to XOR with the keystream starting at byte 32, so prepend 32 dummy bytes
 	buf := make([]byte, 32+len(ciphertext))
 	copy(buf[32:], ciphertext)
-	salsa20.XORKeyStream(buf, buf, salsaNonce[:], &subkey)
+	salsa20.XORKeyStream(buf, buf, salsaNonce[:], &subkey2)
 	plaintext := make([]byte, len(ciphertext))
 	copy(plaintext, buf[32:])
 
 	// Zero sensitive material
-	for i := range subkey {
-		subkey[i] = 0
+	for i := range subkey2 {
+		subkey2[i] = 0
 	}
 	for i := range polyKey {
 		polyKey[i] = 0
