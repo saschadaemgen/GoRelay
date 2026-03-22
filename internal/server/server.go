@@ -240,12 +240,14 @@ func (s *Server) handleSMPConnection(ctx context.Context, conn net.Conn) {
 	state := tlsConn.ConnectionState()
 	alpnConfirmed := state.NegotiatedProtocol == "smp/1"
 
-	// Extract TLS channel binding (tls-unique).
-	// In TLS 1.3 with Go stdlib, TLSUnique is empty because RFC 8446
-	// does not define tls-unique. The Haskell tls library provides
-	// getPeerFinished even for TLS 1.3. This is a known limitation
-	// when running with Go's TLS 1.3 implementation.
+	// Extract TLS channel binding (tls-unique / RFC 5929).
+	// With TLS 1.2 this is the client's Finished message, matching
+	// what the Haskell tls library returns via getPeerFinished.
 	sessionID := state.TLSUnique
+	if len(sessionID) == 0 {
+		slog.Error("tls-unique channel binding is empty, rejecting connection")
+		return
+	}
 
 	// Build handshake parameters
 	params := smp.ServerHandshakeParams{

@@ -79,6 +79,8 @@ func dialSMP(t *testing.T, addr string) net.Conn {
 		&tls.Config{
 			InsecureSkipVerify: true,
 			NextProtos:         []string{"smp/1"},
+			MinVersion:         tls.VersionTLS12,
+			MaxVersion:         tls.VersionTLS12,
 		},
 	)
 	if err != nil {
@@ -321,5 +323,90 @@ func TestPingPongPaddingCharacter(t *testing.T) {
 		if resp[i] != '#' {
 			t.Fatalf("PONG padding at %d: got 0x%02x, want '#'", i, resp[i])
 		}
+	}
+}
+
+func TestTLSUniqueNonEmpty(t *testing.T) {
+	addr, cancel := startTestServer(t)
+	defer cancel()
+
+	conn, err := tls.DialWithDialer(
+		&net.Dialer{Timeout: 5 * time.Second},
+		"tcp",
+		addr,
+		&tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"smp/1"},
+			MinVersion:         tls.VersionTLS12,
+			MaxVersion:         tls.VersionTLS12,
+		},
+	)
+	if err != nil {
+		t.Fatalf("dial TLS: %v", err)
+	}
+	defer conn.Close()
+
+	state := conn.ConnectionState()
+
+	// TLSUnique must be non-empty with TLS 1.2
+	if len(state.TLSUnique) == 0 {
+		t.Fatal("TLSUnique is empty - session binding will not work")
+	}
+
+	// Verify TLS 1.2 is negotiated
+	if state.Version != tls.VersionTLS12 {
+		t.Fatalf("expected TLS 1.2 (0x%04x), got 0x%04x", tls.VersionTLS12, state.Version)
+	}
+}
+
+func TestSessionBindingMatchesInHandshake(t *testing.T) {
+	addr, cancel := startTestServer(t)
+	defer cancel()
+
+	conn, err := tls.DialWithDialer(
+		&net.Dialer{Timeout: 5 * time.Second},
+		"tcp",
+		addr,
+		&tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"smp/1"},
+			MinVersion:         tls.VersionTLS12,
+			MaxVersion:         tls.VersionTLS12,
+		},
+	)
+	if err != nil {
+		t.Fatalf("dial TLS: %v", err)
+	}
+	defer conn.Close()
+
+	state := conn.ConnectionState()
+	clientTLSUnique := state.TLSUnique
+
+	if len(clientTLSUnique) == 0 {
+		t.Fatal("client TLSUnique is empty")
+	}
+
+	// Derive CA fingerprint
+	caFingerprint := ""
+	if len(state.PeerCertificates) >= 2 {
+		caFingerprint = smp.ComputeCAFingerprint(state.PeerCertificates[1])
+	}
+
+	// The client handshake will verify session ID internally.
+	// If session binding mismatches, ClientHandshake returns ErrSessionMismatch.
+	params := smp.ClientHandshakeParams{
+		CAFingerprint: caFingerprint,
+		SessionID:     clientTLSUnique,
+		VersionMin:    smp.SMPVersionMin,
+		VersionMax:    smp.SMPVersionMax,
+	}
+	result, err := smp.ClientHandshake(conn, params)
+	if err != nil {
+		t.Fatalf("handshake with session binding failed: %v", err)
+	}
+
+	// Verify the result contains a valid session ID
+	if len(result.SessionID) == 0 {
+		t.Fatal("handshake result has empty session ID")
 	}
 }

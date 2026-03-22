@@ -31,6 +31,8 @@ func ConnectSMP(addr string, skipVerify bool, verbose bool) (*SMPClient, error) 
 		&tls.Config{
 			InsecureSkipVerify: skipVerify,
 			NextProtos:         []string{"smp/1"},
+			MinVersion:         tls.VersionTLS12,
+			MaxVersion:         tls.VersionTLS12,
 		},
 	)
 	if err != nil {

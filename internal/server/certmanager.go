@@ -75,15 +75,20 @@ func (cm *CertManager) SMPURI(host string, port string) string {
 // TLSConfig returns a tls.Config suitable for the SMP listener.
 // Restricted to ChaCha20-Poly1305, X25519 key exchange, Ed25519 signatures.
 // Session tickets are disabled per the SMP specification.
+//
+// Go's crypto/tls does not expose TLS Finished messages for TLS 1.3,
+// which are needed for tls-unique channel binding (RFC 5929).
+// TLS 1.2 with ChaCha20-Poly1305 + X25519 provides equivalent security.
+// TODO: Upgrade to TLS 1.3 when Go exposes Finished messages or
+// when we implement ExportedKeyingMaterial as alternative binding.
 func (cm *CertManager) TLSConfig() *tls.Config {
 	return &tls.Config{
 		Certificates: []tls.Certificate{cm.tlsCert},
-		MinVersion:   tls.VersionTLS13,
-		NextProtos:   []string{"smp/1"},
-		// TLS 1.3 cipher suites are not configurable in Go stdlib;
-		// Go auto-selects from the three TLS 1.3 suites including
-		// TLS_CHACHA20_POLY1305_SHA256.
-		CurvePreferences:     []tls.CurveID{tls.X25519},
+		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256},
+		CurvePreferences:       []tls.CurveID{tls.X25519},
+		NextProtos:             []string{"smp/1"},
 		SessionTicketsDisabled: true,
 	}
 }

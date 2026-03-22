@@ -31,6 +31,7 @@ var (
 	ErrInvalidHello     = errors.New("invalid handshake message")
 	ErrIdentityMismatch = errors.New("CA fingerprint mismatch")
 	ErrInvalidSignature = errors.New("server key signature invalid")
+	ErrSessionMismatch  = errors.New("session identifier mismatch")
 )
 
 // x25519SPKIPrefix is the ASN.1 DER prefix for an X25519 SubjectPublicKeyInfo.
@@ -402,6 +403,15 @@ func ClientHandshake(conn net.Conn, params ClientHandshakeParams) (*ClientHandsh
 	}
 	if !ed25519.Verify(serverPub, serverHello.DHPubKeySPKI, serverHello.DHKeySignature) {
 		return nil, ErrInvalidSignature
+	}
+
+	// Verify session identifier matches our TLS channel binding.
+	// Both sides must see the same tls-unique value for the connection
+	// to be considered authentic (prevents MITM relay attacks).
+	if len(params.SessionID) > 0 && len(serverHello.SessionID) > 0 {
+		if subtle.ConstantTimeCompare(params.SessionID, serverHello.SessionID) != 1 {
+			return nil, ErrSessionMismatch
+		}
 	}
 
 	// Determine CA fingerprint to send

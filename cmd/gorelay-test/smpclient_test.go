@@ -52,7 +52,10 @@ func startTestServer(t *testing.T) (addr string, cancel context.CancelFunc) {
 			&net.Dialer{Timeout: 500 * time.Millisecond},
 			"tcp",
 			freeAddr,
-			&tls.Config{InsecureSkipVerify: true},
+			&tls.Config{
+				InsecureSkipVerify: true,
+				MaxVersion:         tls.VersionTLS12,
+			},
 		)
 		if dialErr == nil {
 			conn.Close()
