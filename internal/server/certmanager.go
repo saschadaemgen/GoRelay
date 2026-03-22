@@ -62,7 +62,8 @@ func NewCertManager(dataDir string) (*CertManager, error) {
 }
 
 // Fingerprint returns the base64url-encoded (no padding) SHA-256 hash
-// of the CA certificate's SubjectPublicKeyInfo DER block per the SMP spec.
+// of the full DER-encoded CA certificate, matching the Haskell reference
+// (getFingerprint caCert X.HashSHA256).
 func (cm *CertManager) Fingerprint() string {
 	return cm.fingerprint
 }
@@ -180,11 +181,11 @@ func (cm *CertManager) generateCA() error {
 	cm.caKey = priv
 	cm.fingerprint = computeCertFingerprint(caCert)
 
-	certHash := sha256.Sum256(caCert.Raw)
+	spkiHash := sha256.Sum256(caCert.RawSubjectPublicKeyInfo)
 	pubKeyHash := computePubKeyFingerprint(pub)
 	slog.Info("fingerprint debug",
-		"spki_hash", cm.fingerprint,
-		"cert_hash", base64.RawURLEncoding.EncodeToString(certHash[:]),
+		"cert_hash", cm.fingerprint,
+		"spki_hash", base64.RawURLEncoding.EncodeToString(spkiHash[:]),
 		"pubkey_hash", pubKeyHash,
 	)
 
@@ -233,11 +234,11 @@ func (cm *CertManager) loadCA() error {
 	cm.caKey = edKey
 	cm.fingerprint = computeCertFingerprint(caCert)
 
-	certHash := sha256.Sum256(caCert.Raw)
+	spkiHash := sha256.Sum256(caCert.RawSubjectPublicKeyInfo)
 	pubKeyHash := computePubKeyFingerprint(edKey.Public().(ed25519.PublicKey))
 	slog.Info("fingerprint debug",
-		"spki_hash", cm.fingerprint,
-		"cert_hash", base64.RawURLEncoding.EncodeToString(certHash[:]),
+		"cert_hash", cm.fingerprint,
+		"spki_hash", base64.RawURLEncoding.EncodeToString(spkiHash[:]),
 		"pubkey_hash", pubKeyHash,
 	)
 
@@ -356,11 +357,11 @@ func (cm *CertManager) loadOnlineCert() error {
 
 // --- helpers ---
 
-// computeCertFingerprint returns SHA256 of the certificate's SubjectPublicKeyInfo
-// DER block, base64url-encoded without padding. Per the SMP spec, serverIdentity
-// is the hash of the SPKI block, not the full certificate DER.
+// computeCertFingerprint returns SHA256 of the full DER-encoded certificate,
+// base64url-encoded without padding. This matches the Haskell reference
+// implementation: getFingerprint caCert X.HashSHA256 hashes cert.Raw.
 func computeCertFingerprint(cert *x509.Certificate) string {
-	hash := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	hash := sha256.Sum256(cert.Raw)
 	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
 

@@ -540,11 +540,11 @@ func negotiateClientVersion(serverMin, serverMax, clientMin, clientMax uint16) (
 
 // --- Helpers ---
 
-// ComputeCAFingerprint returns the SHA256 of a certificate's SubjectPublicKeyInfo
-// DER block, base64url-encoded without padding. Per the SMP spec, serverIdentity
-// is the hash of the SPKI block.
+// ComputeCAFingerprint returns the SHA256 of the full DER-encoded certificate,
+// base64url-encoded without padding. Matches the Haskell reference:
+// getFingerprint caCert X.HashSHA256 hashes the complete DER bytes.
 func ComputeCAFingerprint(cert *x509.Certificate) string {
-	hash := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	hash := sha256.Sum256(cert.Raw)
 	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
 
