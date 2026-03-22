@@ -493,6 +493,8 @@ func (s *Server) dispatch(c *Client, cmd common.Command) common.Response {
 		return s.handleSEND(c, cmd)
 	case common.CmdACK:
 		return s.handleACK(c, cmd)
+	case common.CmdDEL:
+		return s.handleDEL(c, cmd)
 	default:
 		// TODO: implement all command handlers
 		return common.Response{
@@ -1057,6 +1059,65 @@ func (s *Server) handleACK(c *Client, cmd common.Command) common.Response {
 	}
 
 	return okResp
+}
+
+// handleDEL deletes a queue. DEL is a recipient command (entityId = recipientId).
+// Requires Ed25519 signature with the queue's recipient key.
+// Idempotent: DEL on already-deleted queue returns OK.
+func (s *Server) handleDEL(c *Client, cmd common.Command) common.Response {
+	errResp := common.Response{
+		Type:          common.CmdERR,
+		CorrelationID: cmd.CorrelationID,
+	}
+
+	if !cmd.HasEntityID {
+		errResp.ErrorCode = common.ErrNoQueue
+		return errResp
+	}
+
+	recipientID := cmd.EntityID
+
+	// Look up queue by recipientID
+	q, err := s.store.GetQueue(recipientID)
+	if err != nil {
+		// Queue not found - idempotent, return OK
+		return common.Response{
+			Type:          common.CmdOK,
+			CorrelationID: cmd.CorrelationID,
+		}
+	}
+
+	// Verify Ed25519 signature against queue's recipientKey
+	if len(cmd.Signature) == 0 || len(cmd.SignedData) == 0 {
+		s.metrics.AddSecurityEvent("auth_failure", "DEL missing signature")
+		errResp.ErrorCode = common.ErrAuth
+		return errResp
+	}
+
+	signedWithSession := prependSessionID(c.sessionID, cmd.SignedData)
+	if !ed25519.Verify(q.RecipientKey, signedWithSession, cmd.Signature) {
+		s.metrics.AddSecurityEvent("auth_failure", "DEL invalid signature")
+		errResp.ErrorCode = common.ErrAuth
+		return errResp
+	}
+
+	// Remove subscription from hub
+	s.subHub.Unsubscribe(recipientID, c)
+	delete(c.subscriptions, recipientID)
+
+	// Delete queue from store (removes queue, sender mapping, messages)
+	if delErr := s.store.DeleteQueue(recipientID); delErr != nil {
+		slog.Error("delete queue failed", "err", delErr)
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+
+	s.metrics.ActiveQueues.Add(-1)
+
+	return common.Response{
+		Type:          common.CmdOK,
+		CorrelationID: cmd.CorrelationID,
+	}
 }
 
 // clientDisconnected cleans up after a client disconnects
