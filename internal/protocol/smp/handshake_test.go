@@ -753,7 +753,8 @@ func TestComputeCAFingerprint(t *testing.T) {
 	caCert, _ := generateTestCA(t)
 
 	fp := ComputeCAFingerprint(caCert)
-	hash := sha256.Sum256(caCert.Raw)
+	// Per SMP spec: fingerprint = SHA256 of SPKI DER block
+	hash := sha256.Sum256(caCert.RawSubjectPublicKeyInfo)
 	expected := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	if fp != expected {

@@ -62,7 +62,7 @@ func NewCertManager(dataDir string) (*CertManager, error) {
 }
 
 // Fingerprint returns the base64url-encoded (no padding) SHA-256 hash
-// of the full DER-encoded CA certificate, matching SimpleX Chat expectations.
+// of the CA certificate's SubjectPublicKeyInfo DER block per the SMP spec.
 func (cm *CertManager) Fingerprint() string {
 	return cm.fingerprint
 }
@@ -180,8 +180,13 @@ func (cm *CertManager) generateCA() error {
 	cm.caKey = priv
 	cm.fingerprint = computeCertFingerprint(caCert)
 
+	certHash := sha256.Sum256(caCert.Raw)
 	pubKeyHash := computePubKeyFingerprint(pub)
-	slog.Info("fingerprint debug", "cert_hash", cm.fingerprint, "pubkey_hash", pubKeyHash)
+	slog.Info("fingerprint debug",
+		"spki_hash", cm.fingerprint,
+		"cert_hash", base64.RawURLEncoding.EncodeToString(certHash[:]),
+		"pubkey_hash", pubKeyHash,
+	)
 
 	return nil
 }
@@ -228,8 +233,13 @@ func (cm *CertManager) loadCA() error {
 	cm.caKey = edKey
 	cm.fingerprint = computeCertFingerprint(caCert)
 
+	certHash := sha256.Sum256(caCert.Raw)
 	pubKeyHash := computePubKeyFingerprint(edKey.Public().(ed25519.PublicKey))
-	slog.Info("fingerprint debug", "cert_hash", cm.fingerprint, "pubkey_hash", pubKeyHash)
+	slog.Info("fingerprint debug",
+		"spki_hash", cm.fingerprint,
+		"cert_hash", base64.RawURLEncoding.EncodeToString(certHash[:]),
+		"pubkey_hash", pubKeyHash,
+	)
 
 	return nil
 }
@@ -346,11 +356,11 @@ func (cm *CertManager) loadOnlineCert() error {
 
 // --- helpers ---
 
-// computeCertFingerprint returns SHA256 of the full DER-encoded certificate,
-// base64url-encoded without padding. This matches the SimpleX Chat / SimplexMQ
-// fingerprint computation (X509.Validation.Fingerprint.getFingerprint).
+// computeCertFingerprint returns SHA256 of the certificate's SubjectPublicKeyInfo
+// DER block, base64url-encoded without padding. Per the SMP spec, serverIdentity
+// is the hash of the SPKI block, not the full certificate DER.
 func computeCertFingerprint(cert *x509.Certificate) string {
-	hash := sha256.Sum256(cert.Raw)
+	hash := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
 

@@ -194,7 +194,7 @@ func TestSMPURI(t *testing.T) {
 	}
 }
 
-func TestFingerprintMatchesCertDERHash(t *testing.T) {
+func TestFingerprintMatchesSPKIHash(t *testing.T) {
 	dir := t.TempDir()
 
 	cm, err := NewCertManager(dir)
@@ -202,12 +202,19 @@ func TestFingerprintMatchesCertDERHash(t *testing.T) {
 		t.Fatalf("NewCertManager: %v", err)
 	}
 
-	// Manually compute SHA256 of the full DER-encoded CA certificate
-	hash := sha256.Sum256(cm.CACert().Raw)
+	// Per SMP spec: fingerprint = SHA256 of the certificate's SubjectPublicKeyInfo DER
+	hash := sha256.Sum256(cm.CACert().RawSubjectPublicKeyInfo)
 	expected := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	if cm.Fingerprint() != expected {
 		t.Fatalf("fingerprint mismatch: got %q, want %q", cm.Fingerprint(), expected)
+	}
+
+	// Verify it does NOT equal SHA256 of the full certificate DER
+	certHash := sha256.Sum256(cm.CACert().Raw)
+	certHashStr := base64.RawURLEncoding.EncodeToString(certHash[:])
+	if cm.Fingerprint() == certHashStr {
+		t.Fatal("fingerprint should not equal full cert DER hash")
 	}
 }
 
