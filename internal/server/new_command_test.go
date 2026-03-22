@@ -20,10 +20,18 @@ import (
 // v7 NEW body: recipientAuthKey(shortString SPKI) + recipientDhKey(shortString SPKI)
 //
 //	+ subscribeMode("S")
+//
+// Returns the block and the recipient DH private key (needed to compute shared secret).
 func buildNEWBlock(corrID [24]byte, recipientKey ed25519.PublicKey) [common.BlockSize]byte {
+	block, _ := buildNEWBlockWithDH(corrID, recipientKey)
+	return block
+}
+
+// buildNEWBlockWithDH is like buildNEWBlock but also returns the recipient DH private key.
+func buildNEWBlockWithDH(corrID [24]byte, recipientKey ed25519.PublicKey) ([common.BlockSize]byte, *ecdh.PrivateKey) {
 	// Build command body
 	authKeySPKI := smp.EncodeEd25519SPKI(recipientKey)
-	// Generate a dummy X25519 DH key for the recipient
+	// Generate X25519 DH key for the recipient
 	dhPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		panic("generate DH key: " + err.Error())
@@ -41,7 +49,7 @@ func buildNEWBlock(corrID [24]byte, recipientKey ed25519.PublicKey) [common.Bloc
 	body = append(body, 'S')
 
 	t := common.BuildTransmission(nil, corrID, nil, common.TagNEW, body)
-	return common.WrapTransmissionBlock(t)
+	return common.WrapTransmissionBlock(t), dhPriv
 }
 
 // parseIDSResponse parses the IDS body from a raw response block.

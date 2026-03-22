@@ -27,7 +27,7 @@ func TestIntegrationCompleteFlow(t *testing.T) {
 		t.Fatalf("gen recipient key: %v", err)
 	}
 
-	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
+	recipientID, senderID, dhKey := createQueueOnConnWithDH(t, connA, recipientPub)
 
 	connB, sessBID := dialSMPWithSession(t, addr)
 	defer connB.Close()
@@ -57,7 +57,7 @@ func TestIntegrationCompleteFlow(t *testing.T) {
 	}
 
 	msgResp := readRawBlock(t, connA)
-	msgID, _, _, body := parseMSGResponse(t, msgResp)
+	msgID, _, _, body := parseMSGResponseEncrypted(t, msgResp, dhKey)
 	if !bytes.Equal(body, msgContent) {
 		t.Fatalf("MSG body: got %q, want %q", body, msgContent)
 	}
@@ -95,7 +95,7 @@ func TestIntegrationSubscriptionTakeover(t *testing.T) {
 		t.Fatalf("gen recipient key: %v", err)
 	}
 
-	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
+	recipientID, senderID, dhKey := createQueueOnConnWithDH(t, connA, recipientPub)
 
 	connB, sessBID := dialSMPWithSession(t, addr)
 	defer connB.Close()
@@ -146,7 +146,7 @@ func TestIntegrationSubscriptionTakeover(t *testing.T) {
 	}
 
 	msgResp := readRawBlock(t, connC)
-	_, _, _, body := parseMSGResponse(t, msgResp)
+	_, _, _, body := parseMSGResponseEncrypted(t, msgResp, dhKey)
 	if string(body) != "after takeover" {
 		t.Fatalf("MSG body: got %q, want %q", body, "after takeover")
 	}
@@ -166,7 +166,7 @@ func TestIntegrationFIFOThreeMessages(t *testing.T) {
 		t.Fatalf("gen key: %v", err)
 	}
 
-	recipientID, senderID := createQueueOnConn(t, recipientConn, recipientPub)
+	recipientID, senderID, dhKey := createQueueOnConnWithDH(t, recipientConn, recipientPub)
 
 	senderConn, sessSID := dialSMPWithSession(t, addr)
 	defer senderConn.Close()
@@ -193,7 +193,7 @@ func TestIntegrationFIFOThreeMessages(t *testing.T) {
 
 	for i, expected := range messages {
 		msgResp := readRawBlock(t, recipientConn)
-		msgID, _, _, body := parseMSGResponse(t, msgResp)
+		msgID, _, _, body := parseMSGResponseEncrypted(t, msgResp, dhKey)
 		if string(body) != expected {
 			t.Fatalf("message %d: got %q, want %q", i, body, expected)
 		}
@@ -490,7 +490,7 @@ func TestIntegrationSUBDeliversPendingMessage(t *testing.T) {
 		t.Fatalf("gen recipient key: %v", err)
 	}
 
-	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
+	recipientID, senderID, dhKey := createQueueOnConnWithDH(t, connA, recipientPub)
 	connA.Close()
 	time.Sleep(50 * time.Millisecond)
 
@@ -536,7 +536,7 @@ func TestIntegrationSUBDeliversPendingMessage(t *testing.T) {
 		t.Fatalf("SUB with pending msg: expected MSG, got 0x%02x", cmd.Type)
 	}
 
-	_, _, _, body := parseMSGResponse(t, resp)
+	_, _, _, body := parseMSGResponseEncrypted(t, resp, dhKey)
 	if string(body) != "pending msg" {
 		t.Fatalf("pending MSG body: got %q, want %q", body, "pending msg")
 	}

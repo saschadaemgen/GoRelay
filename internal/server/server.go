@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"golang.org/x/crypto/nacl/box"
+
 	"github.com/saschadaemgen/GoRelay/internal/config"
 	"github.com/saschadaemgen/GoRelay/internal/protocol/common"
 	"github.com/saschadaemgen/GoRelay/internal/protocol/smp"
@@ -567,12 +569,24 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 		}
 	}
 
-	// recipientDhPublicKey = shortString(SPKI DER X25519) - parse but we
-	// use server-generated DH keys for now
+	// recipientDhPublicKey = shortString(SPKI DER X25519)
+	var recipientDhPubKeyRaw []byte
 	if off < len(body) {
 		dhKeyLen := int(body[off])
 		off++
-		off += dhKeyLen // skip past it
+		if off+dhKeyLen > len(body) {
+			errResp.ErrorCode = common.ErrInternal
+			return errResp
+		}
+		dhKeySPKI := body[off : off+dhKeyLen]
+		off += dhKeyLen
+		var dhErr error
+		recipientDhPubKeyRaw, dhErr = smp.ParseX25519SPKI(dhKeySPKI)
+		if dhErr != nil {
+			slog.Debug("NEW: invalid recipient DH key SPKI", "err", dhErr)
+			errResp.ErrorCode = common.ErrInternal
+			return errResp
+		}
 	}
 
 	// Fields after recipientDhPublicKey depend on protocol version:
@@ -625,7 +639,7 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 		"sender_id_hex", hex.EncodeToString(q.SenderID[:]),
 	)
 
-	// Generate server DH keypair if not already set (new queue)
+	// Generate server DH keypair and compute NaCl shared key if new queue
 	if q.ServerDHPubKey == nil {
 		dhPriv, dhErr := ecdh.X25519().GenerateKey(rand.Reader)
 		if dhErr != nil {
@@ -634,7 +648,35 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 			return errResp
 		}
 		q.ServerDHPubKey = dhPriv.PublicKey().Bytes()
-		q.ServerDHSecret = dhPriv.Bytes()
+
+		// Compute NaCl precomputed shared key if recipient DH key is available
+		if len(recipientDhPubKeyRaw) == 32 {
+			var sharedKey [32]byte
+			var serverPriv32, recipientPub32 [32]byte
+			copy(serverPriv32[:], dhPriv.Bytes())
+			copy(recipientPub32[:], recipientDhPubKeyRaw)
+			box.Precompute(&sharedKey, &recipientPub32, &serverPriv32)
+
+			// Zero the raw server private key immediately
+			for i := range serverPriv32 {
+				serverPriv32[i] = 0
+			}
+
+			q.ServerDHSecret = make([]byte, 32)
+			copy(q.ServerDHSecret, sharedKey[:])
+
+			// Zero the local shared key copy
+			for i := range sharedKey {
+				sharedKey[i] = 0
+			}
+		}
+
+		// Persist DH keys to store
+		if persistErr := s.store.UpdateQueueDH(q.RecipientID, q.ServerDHPubKey, q.ServerDHSecret); persistErr != nil {
+			slog.Error("persist DH keys failed", "err", persistErr)
+			errResp.ErrorCode = common.ErrInternal
+			return errResp
+		}
 	}
 
 	// Implicit subscription if subscribeMode is "S"
@@ -738,15 +780,19 @@ func (s *Server) handleSUB(c *Client, cmd common.Command) common.Response {
 		// Still check for pending message
 		msg, msgErr := s.store.PopMessage(q.RecipientID)
 		if msgErr == nil && msg != nil {
+			encBody, encErr := s.encryptMSGBody(q.RecipientID, msg)
+			if encErr != nil {
+				slog.Error("encrypt MSG body failed", "err", encErr)
+				errResp.ErrorCode = common.ErrInternal
+				return errResp
+			}
 			return common.Response{
 				Type:          common.CmdMSG,
 				CorrelationID: cmd.CorrelationID,
 				HasEntityID:   true,
 				EntityID:      q.RecipientID,
 				MessageID:     msg.ID,
-				Timestamp:     msg.Timestamp,
-				Flags:         msg.Flags,
-				Body:          msg.Body,
+				Body:          encBody,
 			}
 		}
 		return common.Response{
@@ -771,15 +817,19 @@ func (s *Server) handleSUB(c *Client, cmd common.Command) common.Response {
 	// Check for pending message
 	msg, msgErr := s.store.PopMessage(q.RecipientID)
 	if msgErr == nil && msg != nil {
+		encBody, encErr := s.encryptMSGBody(q.RecipientID, msg)
+		if encErr != nil {
+			slog.Error("encrypt MSG body failed", "err", encErr)
+			errResp.ErrorCode = common.ErrInternal
+			return errResp
+		}
 		return common.Response{
 			Type:          common.CmdMSG,
 			CorrelationID: cmd.CorrelationID,
 			HasEntityID:   true,
 			EntityID:      q.RecipientID,
 			MessageID:     msg.ID,
-			Timestamp:     msg.Timestamp,
-			Flags:         msg.Flags,
-			Body:          msg.Body,
+			Body:          encBody,
 		}
 	}
 
@@ -983,19 +1033,22 @@ func (s *Server) handleSEND(c *Client, cmd common.Command) common.Response {
 	if sub != nil {
 		headMsg, peekErr := s.store.PopMessage(q.RecipientID)
 		if peekErr == nil && headMsg.ID == msg.ID {
-			s.metrics.MessagesReceived.Add(1)
-			okResp.Deliveries = []common.Delivery{{
-				Target: sub.sndQ,
-				Resp: common.Response{
-					Type:        common.CmdMSG,
-					HasEntityID: true,
-					EntityID:    q.RecipientID,
-					MessageID:   msg.ID,
-					Timestamp:   msg.Timestamp,
-					Flags:       msg.Flags,
-					Body:        msg.Body,
-				},
-			}}
+			encBody, encErr := s.encryptMSGBody(q.RecipientID, headMsg)
+			if encErr != nil {
+				slog.Error("encrypt MSG body failed", "err", encErr)
+			} else {
+				s.metrics.MessagesReceived.Add(1)
+				okResp.Deliveries = []common.Delivery{{
+					Target: sub.sndQ,
+					Resp: common.Response{
+						Type:        common.CmdMSG,
+						HasEntityID: true,
+						EntityID:    q.RecipientID,
+						MessageID:   msg.ID,
+						Body:        encBody,
+					},
+				}}
+			}
 		}
 	}
 
@@ -1043,22 +1096,46 @@ func (s *Server) handleACK(c *Client, cmd common.Command) common.Response {
 	// Check for next pending message and deliver after OK is sent
 	nextMsg, msgErr := s.store.PopMessage(cmd.EntityID)
 	if msgErr == nil && nextMsg != nil {
-		s.metrics.MessagesReceived.Add(1)
-		okResp.Deliveries = []common.Delivery{{
-			Target: c.sndQ,
-			Resp: common.Response{
-				Type:        common.CmdMSG,
-				HasEntityID: true,
-				EntityID:    cmd.EntityID,
-				MessageID:   nextMsg.ID,
-				Timestamp:   nextMsg.Timestamp,
-				Flags:       nextMsg.Flags,
-				Body:        nextMsg.Body,
-			},
-		}}
+		encBody, encErr := s.encryptMSGBody(cmd.EntityID, nextMsg)
+		if encErr != nil {
+			slog.Error("encrypt MSG body failed", "err", encErr)
+		} else {
+			s.metrics.MessagesReceived.Add(1)
+			okResp.Deliveries = []common.Delivery{{
+				Target: c.sndQ,
+				Resp: common.Response{
+					Type:        common.CmdMSG,
+					HasEntityID: true,
+					EntityID:    cmd.EntityID,
+					MessageID:   nextMsg.ID,
+					Body:        encBody,
+				},
+			}}
+		}
 	}
 
 	return okResp
+}
+
+// encryptMSGBody encrypts a message body with NaCl crypto_box for MSG delivery.
+// Uses the precomputed DH shared secret stored on the queue.
+// Returns the encrypted body or an error if the queue has no shared secret.
+func (s *Server) encryptMSGBody(recipientID [24]byte, msg *queue.Message) ([]byte, error) {
+	q, err := s.store.GetQueue(recipientID)
+	if err != nil {
+		return nil, err
+	}
+	if len(q.ServerDHSecret) != 32 {
+		return nil, fmt.Errorf("no DH shared secret for queue")
+	}
+	var dhKey [32]byte
+	copy(dhKey[:], q.ServerDHSecret)
+	encrypted := smp.EncryptMsgBody(dhKey, msg.ID, msg.Timestamp, msg.Flags, msg.Body)
+	// Zero the local key copy
+	for i := range dhKey {
+		dhKey[i] = 0
+	}
+	return encrypted, nil
 }
 
 // handleDEL deletes a queue. DEL is a recipient command (entityId = recipientId).

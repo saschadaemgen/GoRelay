@@ -519,6 +519,35 @@ func (s *BadgerStore) SetSenderKey(senderID [24]byte, senderPubKey ed25519.Publi
 	})
 }
 
+func (s *BadgerStore) UpdateQueueDH(recipientID [24]byte, dhPubKey []byte, dhSharedSecret []byte) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		qItem, err := txn.Get(queueKey(recipientID))
+		if err != nil {
+			return ErrNoQueue
+		}
+
+		var q *Queue
+		if err := qItem.Value(func(val []byte) error {
+			var decErr error
+			q, decErr = decodeQueue(val)
+			return decErr
+		}); err != nil {
+			return err
+		}
+
+		q.ServerDHPubKey = make([]byte, len(dhPubKey))
+		copy(q.ServerDHPubKey, dhPubKey)
+		q.ServerDHSecret = make([]byte, len(dhSharedSecret))
+		copy(q.ServerDHSecret, dhSharedSecret)
+
+		encoded, err := encodeQueue(q)
+		if err != nil {
+			return err
+		}
+		return txn.Set(queueKey(recipientID), encoded)
+	})
+}
+
 func (s *BadgerStore) DeleteQueue(recipientID [24]byte) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		// Get queue to find senderID and recipientKey

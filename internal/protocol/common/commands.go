@@ -213,13 +213,8 @@ func (r Response) Serialize() []byte {
 		// msgId = shortString(24 bytes)
 		t = append(t, CorrIDSize)
 		t = append(t, r.MessageID[:]...)
-		// timestamp (8 bytes BE)
-		ts := make([]byte, 8)
-		binary.BigEndian.PutUint64(ts, r.Timestamp)
-		t = append(t, ts...)
-		// flags
-		t = append(t, r.Flags)
-		// body (encrypted message content)
+		// Body is the complete encryptedRcvMsgBody (16082 bytes)
+		// containing auth tag + encrypted(padded(timestamp + flags + sentBody))
 		t = append(t, r.Body...)
 	case CmdEND:
 		t = append(t, TagEND...)

@@ -130,13 +130,14 @@ func TestFullTestSubcommand(t *testing.T) {
 		t.Fatalf("SEND: %v", err)
 	}
 
-	// Step 4: receive MSG
+	// Step 4: receive MSG (body is NaCl encrypted, verify receipt only)
 	msgID, _, _, body, err := recipientClient.ReadMSG()
 	if err != nil {
 		t.Fatalf("read MSG: %v", err)
 	}
-	if string(body) != testMsg {
-		t.Fatalf("MSG body: got %q, want %q", body, testMsg)
+	// Body is encrypted (16082 bytes: 16 tag + 16066 padded ciphertext)
+	if len(body) != 16082 {
+		t.Fatalf("MSG encrypted body length: got %d, want 16082", len(body))
 	}
 
 	// Step 5: ACK

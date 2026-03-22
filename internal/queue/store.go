@@ -23,6 +23,7 @@ type Store interface {
 	GetQueueBySenderID(senderID [24]byte) (*Queue, error)
 	FindQueueByRecipientKey(recipientKey ed25519.PublicKey) (*Queue, error)
 	SetSenderKey(senderID [24]byte, senderKey ed25519.PublicKey) error
+	UpdateQueueDH(recipientID [24]byte, dhPubKey []byte, dhSharedSecret []byte) error
 	DeleteQueue(recipientID [24]byte) error
 	PushMessage(senderID [24]byte, flags byte, body []byte) (*Message, error)
 	PopMessage(recipientID [24]byte) (*Message, error)
@@ -37,7 +38,7 @@ type Queue struct {
 	RecipientKey   ed25519.PublicKey
 	SenderKey      ed25519.PublicKey // set via KEY command, nil until then
 	ServerDHPubKey []byte           // X25519 public key (32 bytes)
-	ServerDHSecret []byte           // X25519 private key (32 bytes) - zeroed after use
+	ServerDHSecret []byte           // NaCl precomputed shared key (32 bytes) from box.Precompute
 	Status         byte
 	CreatedAt      time.Time
 }
@@ -154,6 +155,21 @@ func (s *MemoryStore) SetSenderKey(senderID [24]byte, senderKey ed25519.PublicKe
 	}
 	q.SenderKey = make(ed25519.PublicKey, len(senderKey))
 	copy(q.SenderKey, senderKey)
+	return nil
+}
+
+func (s *MemoryStore) UpdateQueueDH(recipientID [24]byte, dhPubKey []byte, dhSharedSecret []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	q, ok := s.queues[recipientID]
+	if !ok {
+		return ErrNoQueue
+	}
+	q.ServerDHPubKey = make([]byte, len(dhPubKey))
+	copy(q.ServerDHPubKey, dhPubKey)
+	q.ServerDHSecret = make([]byte, len(dhSharedSecret))
+	copy(q.ServerDHSecret, dhSharedSecret)
 	return nil
 }
 

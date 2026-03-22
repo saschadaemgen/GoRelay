@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/nacl/box"
+
 	"github.com/saschadaemgen/GoRelay/internal/protocol/common"
 )
 
@@ -51,18 +53,34 @@ func parseResponseType(t *testing.T, block [common.BlockSize]byte) common.Comman
 
 // createQueueOnConn sends NEW and returns the recipientID and senderID.
 func createQueueOnConn(t *testing.T, conn net.Conn, recipientPub ed25519.PublicKey) (recipientID [24]byte, senderID [24]byte) {
+	recipientID, senderID, _ = createQueueOnConnWithDH(t, conn, recipientPub)
+	return
+}
+
+// createQueueOnConnWithDH sends NEW and returns the recipientID, senderID, and DH shared key.
+func createQueueOnConnWithDH(t *testing.T, conn net.Conn, recipientPub ed25519.PublicKey) (recipientID [24]byte, senderID [24]byte, dhSharedKey [32]byte) {
 	t.Helper()
 	var corrID [24]byte
 	if _, err := rand.Read(corrID[:]); err != nil {
 		t.Fatalf("corrID: %v", err)
 	}
-	block := buildNEWBlock(corrID, recipientPub)
+	block, recipientDHPriv := buildNEWBlockWithDH(corrID, recipientPub)
 	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if _, err := conn.Write(block[:]); err != nil {
 		t.Fatalf("write NEW: %v", err)
 	}
 	resp := readRawBlock(t, conn)
-	_, recipientID, senderID, _ = parseIDSResponse(t, resp)
+	_, recipientID, senderID, serverDHPub := parseIDSResponse(t, resp)
+
+	// Compute NaCl precomputed shared key (same as server does)
+	var recipientPriv32, serverPub32 [32]byte
+	copy(recipientPriv32[:], recipientDHPriv.Bytes())
+	copy(serverPub32[:], serverDHPub)
+	box.Precompute(&dhSharedKey, &serverPub32, &recipientPriv32)
+	// Zero private key
+	for i := range recipientPriv32 {
+		recipientPriv32[i] = 0
+	}
 	return
 }
 

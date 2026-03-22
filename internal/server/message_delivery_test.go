@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/nacl/secretbox"
+
 	"github.com/saschadaemgen/GoRelay/internal/protocol/common"
 	"github.com/saschadaemgen/GoRelay/internal/protocol/smp"
 )
@@ -66,32 +68,74 @@ func sendAndReadResponse(t *testing.T, conn net.Conn, block [common.BlockSize]by
 }
 
 // parseMSGResponse extracts MSG fields from a raw block.
+// The MSG body is now NaCl secretbox encrypted. Use parseMSGResponseEncrypted
+// with the DH shared key to decrypt and get the original body content.
 func parseMSGResponse(t *testing.T, block [common.BlockSize]byte) (msgID [24]byte, timestamp uint64, flags byte, body []byte) {
 	t.Helper()
 	cmd := parseResponseType(t, block)
 	if cmd.Type != common.CmdMSG {
 		t.Fatalf("expected MSG (0x%02x), got 0x%02x", common.CmdMSG, cmd.Type)
 	}
-	// MSG body after "MSG " tag:
-	//   msgId = shortString(24 bytes) -> 1 byte len + 24 bytes
-	//   timestamp = 8 bytes BE
-	//   flags = 1 byte
-	//   body = rest
+	// MSG wire format: shortString(msgId) + encryptedRcvMsgBody
 	mBody := cmd.Body
 	if len(mBody) < 1 {
 		t.Fatalf("MSG body too short: %d", len(mBody))
 	}
 	mIDLen := int(mBody[0])
-	if 1+mIDLen+8+1 > len(mBody) || mIDLen < 24 {
+	if 1+mIDLen > len(mBody) || mIDLen < 24 {
 		t.Fatalf("MSG body too short for msgId: len=%d, mIDLen=%d", len(mBody), mIDLen)
 	}
 	copy(msgID[:], mBody[1:1+24])
-	off := 1 + mIDLen
-	timestamp = binary.BigEndian.Uint64(mBody[off : off+8])
-	off += 8
-	flags = mBody[off]
-	off++
-	body = mBody[off:]
+	// Remaining bytes are encrypted body (no timestamp/flags in cleartext)
+	body = mBody[1+mIDLen:]
+	return
+}
+
+// parseMSGResponseEncrypted extracts and decrypts MSG fields from a raw block.
+// dhSharedKey is the NaCl precomputed shared key from box.Precompute.
+func parseMSGResponseEncrypted(t *testing.T, block [common.BlockSize]byte, dhSharedKey [32]byte) (msgID [24]byte, timestamp uint64, flags byte, body []byte) {
+	t.Helper()
+	cmd := parseResponseType(t, block)
+	if cmd.Type != common.CmdMSG {
+		t.Fatalf("expected MSG (0x%02x), got 0x%02x", common.CmdMSG, cmd.Type)
+	}
+	// MSG wire format: shortString(msgId) + encryptedRcvMsgBody
+	mBody := cmd.Body
+	if len(mBody) < 1 {
+		t.Fatalf("MSG body too short: %d", len(mBody))
+	}
+	mIDLen := int(mBody[0])
+	if 1+mIDLen > len(mBody) || mIDLen < 24 {
+		t.Fatalf("MSG body too short for msgId: len=%d, mIDLen=%d", len(mBody), mIDLen)
+	}
+	copy(msgID[:], mBody[1:1+24])
+	encrypted := mBody[1+mIDLen:]
+
+	// Decrypt with NaCl secretbox
+	nonce := msgID
+	decrypted, ok := secretbox.Open(nil, encrypted, &nonce, &dhSharedKey)
+	if !ok {
+		t.Fatalf("secretbox.Open failed on MSG body (encrypted len=%d)", len(encrypted))
+	}
+
+	// Decrypted is padded: uint16BE(rcvMsgBodyLen) + rcvMsgBody + zero padding
+	if len(decrypted) < 2 {
+		t.Fatalf("decrypted MSG too short: %d", len(decrypted))
+	}
+	rcvLen := int(binary.BigEndian.Uint16(decrypted[0:2]))
+	if 2+rcvLen > len(decrypted) {
+		t.Fatalf("decrypted MSG rcvLen=%d exceeds buffer %d", rcvLen, len(decrypted))
+	}
+	rcvBody := decrypted[2 : 2+rcvLen]
+
+	// rcvMsgBody = timestamp(8) + flags(1) + SP(0x20) + sentBody
+	if len(rcvBody) < 10 {
+		t.Fatalf("rcvMsgBody too short: %d", len(rcvBody))
+	}
+	timestamp = binary.BigEndian.Uint64(rcvBody[0:8])
+	flags = rcvBody[8]
+	// skip SP at rcvBody[9]
+	body = rcvBody[10:]
 	return
 }
 
@@ -251,7 +295,7 @@ func TestSENDDeliversMSGToSubscribedRecipient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
+	recipientID, senderID, dhKey := createQueueOnConnWithDH(t, connA, recipientPub)
 
 	// Connection B: sender
 	connB, sessBID := dialSMPWithSession(t, addr)
@@ -285,7 +329,7 @@ func TestSENDDeliversMSGToSubscribedRecipient(t *testing.T) {
 
 	// A receives MSG
 	msgResp := readRawBlock(t, connA)
-	_, _, _, body := parseMSGResponse(t, msgResp)
+	_, _, _, body := parseMSGResponseEncrypted(t, msgResp, dhKey)
 	if !bytes.Equal(body, msgContent) {
 		t.Fatalf("MSG body: got %q, want %q", body, msgContent)
 	}
@@ -394,7 +438,7 @@ func TestACKDeliversNextPendingMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
+	recipientID, senderID, dhKey := createQueueOnConnWithDH(t, connA, recipientPub)
 
 	connB, sessBID := dialSMPWithSession(t, addr)
 	defer connB.Close()
@@ -425,7 +469,7 @@ func TestACKDeliversNextPendingMessage(t *testing.T) {
 
 	// A receives first MSG
 	msgResp1 := readRawBlock(t, connA)
-	msgID1, _, _, body1 := parseMSGResponse(t, msgResp1)
+	msgID1, _, _, body1 := parseMSGResponseEncrypted(t, msgResp1, dhKey)
 	if !bytes.Equal(body1, []byte("msg-A")) {
 		t.Fatalf("first MSG body: got %q", body1)
 	}
@@ -442,7 +486,7 @@ func TestACKDeliversNextPendingMessage(t *testing.T) {
 
 	// A should receive second MSG
 	msgResp2 := readRawBlock(t, connA)
-	_, _, _, body2 := parseMSGResponse(t, msgResp2)
+	_, _, _, body2 := parseMSGResponseEncrypted(t, msgResp2, dhKey)
 	if !bytes.Equal(body2, []byte("msg-B")) {
 		t.Fatalf("second MSG body: got %q", body2)
 	}
@@ -516,7 +560,7 @@ func TestFullCycleNEWtoKEYtoSENDtoMSGtoACK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
+	recipientID, senderID, dhKey := createQueueOnConnWithDH(t, connA, recipientPub)
 
 	connB, sessBID := dialSMPWithSession(t, addr)
 	defer connB.Close()
@@ -549,7 +593,7 @@ func TestFullCycleNEWtoKEYtoSENDtoMSGtoACK(t *testing.T) {
 
 	// A receives MSG
 	msgResp := readRawBlock(t, connA)
-	msgID, _, _, body := parseMSGResponse(t, msgResp)
+	msgID, _, _, body := parseMSGResponseEncrypted(t, msgResp, dhKey)
 	if !bytes.Equal(body, msgContent) {
 		t.Fatalf("MSG body: got %q, want %q", body, msgContent)
 	}
@@ -586,7 +630,7 @@ func TestMultipleMessagesFIFOOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
+	recipientID, senderID, dhKey := createQueueOnConnWithDH(t, connA, recipientPub)
 
 	connB, sessBID := dialSMPWithSession(t, addr)
 	defer connB.Close()
@@ -617,7 +661,7 @@ func TestMultipleMessagesFIFOOrder(t *testing.T) {
 	// Receive and ACK all messages in FIFO order
 	for i, expected := range msgs {
 		resp := readRawBlock(t, connA)
-		msgID, _, _, body := parseMSGResponse(t, resp)
+		msgID, _, _, body := parseMSGResponseEncrypted(t, resp, dhKey)
 		if !bytes.Equal(body, []byte(expected)) {
 			t.Fatalf("msg %d: got %q, want %q", i, body, expected)
 		}
