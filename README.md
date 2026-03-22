@@ -5,174 +5,107 @@
 <h1 align="center">GoRelay</h1>
 
 <p align="center">
-  <strong>The first SMP-compatible relay server written in Go.</strong><br>
-  Zero-knowledge by construction, not by policy.
+  <strong>Secure Dual Relay Infrastructure for Messaging, IoT, and High-Security Applications.</strong><br>
+  Zero-knowledge by construction. Post-quantum by design.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License"></a>
-  <a href="#technology-stack"><img src="https://img.shields.io/badge/Go-1.24+-00ADD8.svg" alt="Go Version"></a>
-  <a href="#simplex-compatibility"><img src="https://img.shields.io/badge/SMP-v7-10B981.svg" alt="SMP Protocol"></a>
-  <a href="#simplex-compatibility"><img src="https://img.shields.io/badge/SimpleX-Compatible%20%E2%9C%93-brightgreen.svg" alt="SimpleX Compatible"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Go-1.24+-00ADD8.svg" alt="Go Version"></a>
   <a href="#status"><img src="https://img.shields.io/badge/version-0.0.1--alpha-orange.svg" alt="Version"></a>
   <a href="https://wiki.gorelay.dev"><img src="https://img.shields.io/badge/docs-wiki.gorelay.dev-blue.svg" alt="Documentation"></a>
 </p>
 
 ---
 
-GoRelay is an open-source dual-protocol encrypted relay server for anonymous, metadata-resistant messaging infrastructure. It implements the SimpleX Messaging Protocol (SMP) for full compatibility with SimpleX Chat clients, and adds the GoRelay Protocol (GRP) with mandatory post-quantum cryptography, Noise transport, and two-hop relay routing.
+GoRelay is a dual-protocol encrypted relay server written in Go. It provides anonymous, metadata-resistant communication infrastructure for messaging, IoT sensor networks, and high-security applications.
 
-GoRelay is part of the SimpleGo ecosystem - dedicated hardware messenger devices running on ESP32 microcontrollers. Together, they form a complete privacy-focused communication stack from silicon to server.
+The project was born from a simple observation: existing messaging protocols treat every conversation the same way, whether it is a group chat between friends or a command to a medical device. Group functionality forces architectural compromises - shared keys, fan-out delivery, metadata leakage about group membership. By deliberately excluding group messaging from the protocol layer, GoRelay guarantees that every single message receives its own full Double Ratchet encryption with perfect forward secrecy. No exceptions, no shortcuts, no shared state between conversations.
 
-Sensitive data belongs on infrastructure you control, transmitted through channels nobody else can read. Whether that data is a text message between activists, a command to an industrial sensor, or a notification from a medical device.
+This makes GoRelay particularly suited for environments where each data channel must be independently secured: industrial control systems, medical telemetry, building security, fleet management, and any scenario where compromising one channel must never compromise another.
 
-Built entirely in Go. Compiles to a single binary. Runs on any Linux server. Small enough to audit.
-
----
-
-## Why GoRelay?
-
-The official SimpleX server is written in Haskell - a powerful language with strong correctness guarantees. GoRelay brings SMP to the Go ecosystem for a different set of priorities:
-
-| | Haskell (simplexmq) | Go (GoRelay) |
-|:--|:--|:--|
-| **Deployment** | GHC runtime, Cabal dependencies | Single static binary, zero dependencies |
-| **Community** | Niche, academic | Large, industry-standard |
-| **Concurrency** | Green threads (GHC RTS) | Goroutines (Go runtime) |
-| **Extensibility** | SMP only | SMP + GRP dual protocol |
-| **Post-Quantum Transport** | Not yet | ML-KEM-768 planned (Phase 4) |
-
-GoRelay is not a replacement for the official SimpleX server. It is an extension of the SimpleX ecosystem that brings SMP compatibility to Go and adds post-quantum transport capabilities.
+GoRelay compiles to a single binary with zero dependencies. Download, configure, run. One file, three ports, full encryption.
 
 ---
 
-## SimpleX Compatibility
+## Two Protocols, One Server
 
-GoRelay passes the official SimpleX Chat server test with a green checkmark.
+GoRelay runs two protocols simultaneously, sharing a single encrypted queue store.
 
-Verified on March 22, 2026 with SimpleX Desktop. The following SMP v7 commands are fully implemented:
+**SMP (Port 5223)** implements the SimpleX Messaging Protocol v7. Any SMP-compatible client can connect and exchange messages through GoRelay. This provides immediate access to a proven, audited messaging protocol and its existing user base. SMP compatibility was verified against the SimpleX Chat desktop application on March 22, 2026.
 
-| Command | Direction | Status | Description |
-|:--------|:----------|:-------|:------------|
-| **NEW** | Client to Server | Working | Create queue with Ed25519 auth key + X25519 DH key |
-| **IDS** | Server to Client | Working | Return recipient ID, sender ID, server DH public key |
-| **KEY** | Client to Server | Working | Set sender authentication key (recipient command) |
-| **SKEY** | Client to Server | Working | Sender-side queue securing (v9+) |
-| **SUB** | Client to Server | Working | Subscribe with Ed25519 signature verification + takeover |
-| **SEND** | Client to Server | Working | Store message, deliver to subscriber if present |
-| **MSG** | Server to Client | Working | Deliver oldest unacknowledged message, one at a time |
-| **ACK** | Client to Server | Working | Acknowledge receipt + cryptographic deletion |
-| **DEL** | Client to Server | Working | Delete queue and all associated messages |
-| **PING** | Client to Server | Working | Keep-alive, server responds with PONG |
+**GRP (Port 7443)** is the GoRelay Protocol - designed specifically for microcontroller hardware, IoT infrastructure, and high-security environments. GRP uses the Noise Protocol Framework for transport, mandatory post-quantum key exchange with ML-KEM-768 hybridized with X25519, and two-hop relay routing where no single server knows both sender and recipient.
+
+The critical difference: SMP was designed for smartphone apps. GRP is designed for dedicated hardware that runs without an operating system, for sensors that transmit data autonomously, and for environments where "optional security" is not acceptable. Every GRP feature is mandatory. There are no flags to disable encryption, no fallback to plaintext, no negotiation downward.
+
+Both protocols deliver to the same queue store. A hardware device sending via GRP and a phone user reading via SMP see the same message. Full interoperability between worlds.
 
 ---
 
-## Encryption and Security
+## Why No Groups?
 
-### Server-Side Security Properties
+This is a deliberate architectural decision, not a limitation.
 
-GoRelay is a zero-knowledge relay. The server stores and forwards encrypted blobs without the ability to read, modify, or correlate message content.
+Group messaging protocols share a fundamental problem: a single message must reach multiple recipients. This requires either shared symmetric keys where one compromised member exposes the entire group, or complex fan-out trees where metadata about group size and membership leaks to the server. Every messaging protocol that supports groups makes trade-offs in forward secrecy, post-compromise security, or metadata resistance to accommodate this.
 
-| Property | Implementation | Details |
-|:---------|:---------------|:--------|
-| **Zero-knowledge** | By construction | Server never has access to plaintext. All message content is end-to-end encrypted by clients. |
-| **No IP logging** | Structurally impossible | No logging code exists that captures client addresses. |
-| **Per-message encryption** | AES-256-GCM | Each message encrypted with a unique random key in BadgerDB storage. |
-| **Cryptographic deletion** | Key destruction on ACK | Message key is zeroed before entry deletion. Data is unrecoverable. |
-| **Constant-time auth** | Dummy key verification | Timing attacks cannot reveal whether a queue ID exists. |
-| **Fixed block size** | 16,384 bytes | Traffic analysis cannot determine message size. All blocks padded with '#'. |
-| **Redelivery protection** | Auto-discard after 5 attempts | Prevents compression bomb + crash loop attacks (48h max instead of 21 days). |
-| **TTL enforcement** | 48h default, 7d hard max | Messages expire automatically. No indefinite storage. |
+GoRelay takes a fundamentally different path. Every message is a point-to-point transmission with its own unique encryption keys derived from an independent Double Ratchet session. There is no concept of a group at the protocol level. The server sees only individual queue operations and cannot determine whether multiple queues serve the same conversation or entirely separate purposes.
 
-### End-to-End Encryption (Client-Side)
+This means compromising one communication channel reveals exactly zero information about any other channel. There is no group key to steal, no membership list to extract, no fan-out pattern to analyze. Each channel is cryptographically independent from every other channel on the server.
 
-When used with SimpleGo hardware clients, messages pass through five independent cryptographic layers:
+For IoT and industrial applications, this is not just a nice property - it is essential. A temperature sensor reporting to a monitoring station and an access control system receiving unlock commands must be completely isolated from each other, even if they share the same relay server. GoRelay guarantees this isolation at the protocol level, not through configuration.
 
-| Layer | Algorithm | Protects Against |
-|:------|:----------|:-----------------|
-| **1a** | X448 Double Ratchet + AES-256-GCM | End-to-end interception. Perfect forward secrecy + post-compromise security. |
-| **1b** | sntrup761 KEM (hybrid with 1a) | Quantum computer attacks on key exchange. Active from first message. |
-| **2** | NaCl cryptobox (X25519 + XSalsa20 + Poly1305) | Traffic correlation between message queues. |
-| **3** | NaCl cryptobox (server-to-recipient) | Correlation of incoming and outgoing server traffic. |
-| **4** | TLS 1.2 + ChaCha20-Poly1305 | Network-level attackers. No downgrade possible. |
+For regular chat conversations, group-like behavior is handled entirely on the client side. A client that wants to send a message to ten people sends ten individual encrypted messages through ten independent channels. The server has no knowledge that these messages are related. This is how SMP-compatible clients already handle groups - the server never knows groups exist.
+
+The result: GoRelay servers are simpler, more secure, and have a smaller attack surface than servers that implement group logic. The complexity lives where it belongs - in the client applications that understand the social context.
 
 ---
 
-## Features
+## Security
 
-### Dual Protocol Architecture
+GoRelay is a zero-knowledge relay. The server stores and forwards encrypted blobs without the ability to read, modify, or correlate message content. This is not a policy choice - it is a structural property of the code. There is no administrator backdoor, no debug mode that reveals plaintext, no logging facility that captures content, because the code to do these things does not exist.
 
-```
-Port 5223: SMP (SimpleX Messaging Protocol)
-+-- TLS 1.2 + ChaCha20-Poly1305 + Ed25519
-+-- Full SimpleX Chat client compatibility
-+-- SMP v7 with tls-unique session binding
+**No IP logging** - structurally absent from the codebase, not disabled by configuration.
 
-Port 7443: GRP (GoRelay Protocol) [Phase 4]
-+-- Noise Protocol Framework (IK primary, XX fallback)
-+-- X25519 + ML-KEM-768 hybrid key exchange
-+-- Post-quantum resistant transport
-+-- Two-hop relay routing for metadata resistance
-```
+**Per-message encryption** - every message stored in BadgerDB is encrypted with its own random AES-256-GCM key. Compromising the database file reveals nothing without the individual message keys.
 
-Both protocols share the same QueueStore. Messages are interoperable between SMP and GRP clients.
+**Cryptographic deletion** - when a message is acknowledged, its encryption key is zeroed before the database entry is removed. Even forensic recovery of deleted data produces only ciphertext with a destroyed key.
 
-### Persistent Storage
+**Constant-time authentication** - all signature verification runs in constant time regardless of whether a queue exists. Timing attacks cannot reveal the existence of queue IDs.
 
-- **BadgerDB v4** embedded key-value store - no external database required
-- **Per-message AES-256-GCM encryption** with random 32-byte keys
-- **Cryptographic deletion** on ACK - key zeroed, then entry deleted
-- **Native TTL** - 48 hour default, 7 day hard maximum
-- **Garbage collection** every 5 minutes
-- **Sequence-ordered FIFO** delivery with lexicographic key ordering
+**Fixed 16 KB blocks** - every transmission is padded to exactly 16,384 bytes. Traffic analysis cannot determine message size, command type, or whether a block contains data or padding.
 
-### Connection Model
+**Redelivery loop protection** - messages that repeatedly fail delivery are automatically discarded after 5 attempts. This prevents an attacker from crafting a malicious message that crashes the recipient on every delivery attempt, which would otherwise brick the device for the entire TTL period.
 
-Each SMP connection spawns three goroutines communicating via Go channels:
+**48-hour default TTL** with a hard maximum of 7 days. Messages do not accumulate indefinitely. Garbage collection runs every 5 minutes.
 
-```
-Client --TLS--> [Receiver] --chan--> [Processor] --chan--> [Sender] --TLS--> Client
-                                         |
-                                   [QueueStore]
-                                [SubscriptionHub]
-```
+---
 
-- **Receiver** - reads 16 KB blocks via io.ReadFull, parses transmissions
-- **Processor** - dispatches commands, manages queue state
-- **Sender** - serializes responses, writes 16 KB blocks
+## Use Cases
 
-### Subscription Management
+**Private Messaging** - Run your own relay server for personal or organizational communication. No accounts, no phone numbers, no metadata. Compatible with existing SMP clients out of the box.
 
-- One subscriber per queue at any time
-- NEW creates implicit subscription
-- SUB performs atomic takeover (END sent to displaced subscriber)
-- Messages delivered one at a time, ACK required before next delivery
+**Medical and Health Monitoring** - Transmit patient data and sensor readings through independently encrypted channels. Each device-to-server connection has its own keys. Compliance with data protection regulations is built into the architecture, not bolted on afterward.
 
-### Admin Dashboard
+**Industrial Sensor Networks** - Collect data from environmental sensors, production equipment, and infrastructure monitoring through encrypted channels that cannot be manipulated or eavesdropped. Relevant for water treatment, energy infrastructure, manufacturing, and SCADA environments where data integrity is a safety requirement.
 
-Embedded web dashboard served on localhost:9090 with live metrics:
+**Building Security and Access Control** - Door locks, alarm systems, and surveillance through encrypted point-to-point channels. Commands cannot be intercepted, replayed, or spoofed. Each device operates on an isolated channel.
 
-- Active connections (SMP/GRP split)
-- Queue count, message throughput
-- Memory usage, goroutine count
-- BadgerDB storage size
-- Security event log
-- Server configuration display
+**Fleet and Asset Tracking** - Monitor location, temperature, and status of sensitive shipments. Prevent third parties from building movement profiles or correlating logistics data.
 
-Access via SSH tunnel only - never exposed to the public internet.
+**Emergency and Field Communication** - Deploy relay infrastructure rapidly for disaster response, field operations, or environments where centralized services are unavailable or untrustworthy.
 
 ---
 
 ## Quick Start
 
-### Build from Source
+**Build from source:**
 ```bash
 git clone https://github.com/saschadaemgen/GoRelay.git
 cd GoRelay
 go build -o gorelay ./cmd/gorelay
 ```
 
-### Run
+**Run:**
 ```bash
 ./gorelay
 ```
@@ -183,217 +116,134 @@ GoRelay generates an Ed25519 CA certificate on first run and prints the SMP URI:
 smp://<fingerprint>@<host>:5223
 ```
 
-Add this URI in SimpleX Chat under Settings > Network & Servers > SMP Servers > Add Server.
+Add this URI in any SMP-compatible client to use your server.
 
-### Configuration
-
-| Flag | Environment Variable | Default | Description |
-|:-----|:---------------------|:--------|:------------|
-| `--smp-port` | `GORELAY_SMP_PORT` | 5223 | SMP listener port |
-| `--grp-port` | `GORELAY_GRP_PORT` | 7443 | GRP listener port |
-| `--host` | `GORELAY_HOST` | localhost | Hostname for SMP URI |
-| `--data-dir` | `GORELAY_DATA_DIR` | ./data | Data directory (CA, BadgerDB) |
-| `--admin-port` | `GORELAY_ADMIN_PORT` | 9090 | Admin dashboard port |
-
-CLI flags take precedence over environment variables. Environment variables take precedence over defaults.
+**Custom configuration:**
 ```bash
-# Example: production deployment
-./gorelay --smp-port 5223 --host relay.example.com --data-dir /var/lib/gorelay
+./gorelay --smp-port 5224 --host relay.example.com --data-dir /var/lib/gorelay
 ```
 
-### Cross-Compile for Linux
+All settings are also available as environment variables: `GORELAY_SMP_PORT`, `GORELAY_GRP_PORT`, `GORELAY_HOST`, `GORELAY_DATA_DIR`, `GORELAY_ADMIN_PORT`. CLI flags take precedence over environment variables.
 
-From Windows or macOS:
-```bash
-GOOS=linux GOARCH=amd64 go build -o gorelay ./cmd/gorelay
-scp gorelay user@server:/opt/gorelay/
+**Cross-compile for Linux from Windows:**
+```powershell
+$env:GOOS = "linux"
+$env:GOARCH = "amd64"
+go build -o gorelay ./cmd/gorelay
 ```
 
-### Admin Dashboard via SSH Tunnel
+**Admin dashboard** runs on localhost:9090. Access via SSH tunnel:
 ```bash
 ssh -L 9090:127.0.0.1:9090 user@your-server
-# Then open http://localhost:9090 in your browser
 ```
 
 ---
 
 ## Test Client
 
-GoRelay includes a CLI test tool for server verification:
+GoRelay includes a CLI tool for server verification:
 ```bash
 go build -o gorelay-test ./cmd/gorelay-test
-```
 
-| Command | Description |
-|:--------|:------------|
-| `gorelay-test ping --server host:port` | TLS connect + handshake + PING/PONG with latency |
-| `gorelay-test create-queue --server host:port` | Create queue, print IDs and DH key |
-| `gorelay-test subscribe --server host:port --queue-id ID --key-file keys.json` | Subscribe and wait for messages |
-| `gorelay-test send-message --server host:port --queue-id ID --key-file keys.json --message "text"` | Send a message |
-| `gorelay-test full-test --server host:port` | Automated full cycle: NEW, KEY, SEND, MSG, ACK |
+# Ping test with latency measurement
+./gorelay-test ping --server host:port
+
+# Full message cycle: NEW -> KEY -> SEND -> MSG -> ACK
+./gorelay-test full-test --server host:port
+```
 
 ---
 
 ## Architecture
 
-### Package Structure
-
 ```
-GoRelay/
-+-- cmd/
-|   +-- gorelay/              Entry point, CLI flags, signal handling
-|   +-- gorelay-test/         SMP test client for server verification
-|   +-- smp-capture/          Diagnostic tool for protocol analysis
-+-- internal/
-|   +-- config/               Configuration loading (koanf)
-|   +-- server/               Server, Client, SubscriptionHub, Metrics, Admin
-|   |   +-- web/              Embedded admin dashboard (index.html)
-|   +-- protocol/
-|   |   +-- common/           Block framing, transmission format, command types
-|   |   +-- smp/              SMP handshake, SPKI encoding
-|   |   +-- grp/              GRP protocol handlers (Phase 4)
-|   +-- queue/                QueueStore interface + implementations
-|   |   +-- store.go          Interface definition + MemoryStore
-|   |   +-- badger_store.go   BadgerDB v4 production store
-|   +-- relay/                Relay-to-relay forwarding (Phase 5)
-+-- docs/
-|   +-- images/banners/       Project banners
-|   +-- research/             Protocol analysis and design decisions
-|   +-- protocol/             Byte-level encoding specifications
-|   +-- architecture/         Package structure and data flow
-|   +-- deployment/           TLS, systemd, Docker documentation
-+-- .claude/                  Claude Code instructions (CLAUDE.md)
+cmd/gorelay/                    Server entry point, CLI flags
+cmd/gorelay-test/               SMP test client
+internal/config/                Configuration (koanf)
+internal/server/                Server, Client, SubscriptionHub, Admin Dashboard
+internal/protocol/common/       Block framing, transmission format
+internal/protocol/smp/          SMP handshake, command encoding
+internal/protocol/grp/          GRP protocol (Phase 4)
+internal/queue/                 QueueStore interface + BadgerDB implementation
+internal/relay/                 Relay-to-relay forwarding (Phase 5)
 ```
 
-### Design Rules
+Each connection spawns three goroutines communicating via channels:
 
-- **smp/** and **grp/** packages never import each other - both import **common/**
-- **QueueStore** interface for all persistence - MemoryStore for tests, BadgerDB for production
-- **io.ReadFull** for all network reads - never plain conn.Read
-- **crypto/subtle.ConstantTimeCompare** for all secret comparisons
-- **Explicit zeroing** of all key material after use
-- **slog** for all logging - never fmt.Println or log.Printf
-- **No metadata logging** - never log IPs, queue IDs, message content
-
----
-
-## Roadmap
-
-- [x] **Phase 0** - Research and planning (40 documentation files)
-- [x] **Phase 1** - SMP skeleton (NEW, SUB, KEY, SKEY, SEND, MSG, ACK, DEL, PING/PONG)
-- [ ] **Phase 2** - Full queue operations (OFF, NKEY, NSUB, GET, connection timeouts)
-- [ ] **Phase 3** - Production (Docker, systemd, Prometheus metrics, rate limiting, graceful shutdown)
-- [ ] **Phase 4** - GRP protocol (Noise IK/XX transport, ML-KEM-768 post-quantum, X25519 hybrid)
-- [ ] **Phase 5** - Advanced security (two-hop relay routing, cover traffic, queue rotation)
-
----
-
-## Technology Stack
-
-| Component | Choice | Details |
-|:----------|:-------|:--------|
-| Language | Go 1.24+ | Single binary compilation, goroutine concurrency |
-| Transport (SMP) | crypto/tls | TLS 1.2, ChaCha20-Poly1305, Ed25519, X25519 |
-| Transport (GRP) | flynn/noise v1.1.0 | Noise Protocol Framework, IK and XX patterns |
-| Post-Quantum | crypto/mlkem | FIPS 203, ML-KEM-768 (Phase 4) |
-| Persistence | BadgerDB v4 | Embedded key-value store with native TTL |
-| Configuration | koanf v2 | Multi-source configuration |
-| Logging | log/slog | Structured logging, stdlib |
-| Metrics | prometheus/client_golang | Standard metrics export |
-| Rate Limiting | golang.org/x/time/rate | Per-connection throttling |
+```
+Client --TLS--> [Receiver] --chan--> [Processor] --chan--> [Sender] --TLS--> Client
+                                         |
+                                   [QueueStore]
+                                [SubscriptionHub]
+```
 
 ---
 
 ## Part of the SimpleGo Ecosystem
 
-GoRelay works together with SimpleGo - the world's first post-quantum hardware messenger running on ESP32-S3 microcontrollers.
+GoRelay is the server component of a larger ecosystem built around dedicated hardware for encrypted communication and IoT.
+
+[**SimpleGo**](https://github.com/saschadaemgen/SimpleGo) is the world's first native C implementation of the SimpleX Messaging Protocol, running on ESP32-S3 microcontrollers. It is a complete autonomous firmware - not an app on a smartphone OS. No Android, no iOS, no baseband processor. Four FreeRTOS tasks across two CPU cores handle networking, encryption, storage, and display independently.
+
+SimpleGo implements five encryption layers per message including post-quantum key exchange with sntrup761, AES-256-GCM encrypted SD card storage, and has been verified with 7 simultaneous contacts against the official SimpleX Chat application. The codebase spans 47 C source files and 21,863 lines.
+
+Together, the two projects form a complete stack:
 
 ```
-SimpleGo (ESP32-S3) --SMP--> GoRelay <--SMP-- SimpleX Chat (Phone/Desktop)
-5 encryption layers          [QueueStore]      Full SimpleX compatibility
-sntrup761 PQ-KEM             [BadgerDB + AES-GCM]
+SimpleGo (ESP32-S3) --SMP--> GoRelay <--SMP-- Any SMP Client
+Dedicated hardware            [QueueStore]     Phone, Desktop, etc.
+5 encryption layers           [BadgerDB + AES-GCM]
+sntrup761 post-quantum
 
-SimpleGo (ESP32-S3) --GRP--> GoRelay <--GRP-- Other GRP Clients
-ML-KEM-768 PQ                [Post-Quantum Transport]  (Phase 4)
+SimpleGo (ESP32-S3) --GRP--> GoRelay <--GRP-- Other GRP devices
+ML-KEM-768 (planned)          [Noise + Post-Quantum]  IoT sensors, controllers
 ```
 
-| Component | Role | Status |
-|:----------|:-----|:-------|
-| **SimpleGo** | Dedicated hardware client, ESP32-S3, 5 encryption layers, sntrup761 PQ | Alpha, 47 C files, 21,863 lines |
-| **GoRelay** | Server infrastructure, SMP + GRP dual protocol | Alpha, SimpleX server test passing |
-| **SimpleX Chat** | Full compatibility with existing SimpleX ecosystem | Verified working with GoRelay |
+The microcontroller environment is the reason GoRelay exists. Smartphones come with their own messaging apps. Microcontrollers do not. They need infrastructure that understands their constraints - limited memory, intermittent connectivity, no user interface for key management - while providing the same security guarantees as any desktop application. GoRelay is that infrastructure.
+
+---
+
+## Roadmap
+
+- [x] Phase 0 - Research, protocol analysis, 40 documentation files
+- [x] Phase 1 - SMP v7 skeleton (all core queue operations)
+- [ ] Phase 2 - Extended queue operations, connection management
+- [ ] Phase 3 - Production readiness (Docker, systemd, Prometheus, rate limiting)
+- [ ] Phase 4 - GRP protocol (Noise IK/XX, ML-KEM-768 post-quantum, X25519 hybrid)
+- [ ] Phase 5 - Two-hop relay routing, cover traffic, queue rotation
 
 ---
 
 ## Status
 
-Alpha software under active development. The SMP protocol core is functional and verified against the SimpleX Chat desktop application.
-
-| Component | Status |
-|:----------|:-------|
-| SMP v7 handshake (TLS 1.2 + session binding) | Working |
-| Queue lifecycle (NEW, KEY, SUB, SEND, MSG, ACK, DEL) | Working |
-| SKEY sender-side queue securing | Working |
-| Subscription takeover (END notification) | Working |
-| BadgerDB persistent storage | Working |
-| Per-message AES-256-GCM encryption | Working |
-| Cryptographic deletion on ACK | Working |
-| Redelivery loop protection (MaxDeliveryAttempts=5) | Working |
-| Embedded admin dashboard | Working |
-| CLI test client | Working |
-| SimpleX Chat server test | Passing |
-| GRP protocol (Noise + ML-KEM-768) | Phase 4 |
-| Two-hop relay routing | Phase 5 |
-| Cover traffic | Phase 5 |
-| Docker image | Phase 3 |
-| Prometheus metrics | Phase 3 |
+Alpha software under active development. The SMP protocol core is functional and verified against the SimpleX Chat desktop application. GRP development begins after production hardening.
 
 ---
 
 ## Contributing
 
-GoRelay is open source under AGPL-3.0. Contributions are welcome.
+GoRelay is open source under AGPL-3.0. All code, comments, commits, and documentation in English. Conventional Commits format. Feature branches with squash-merge to main. `go test -race ./...` must pass.
 
-| Rule | Details |
-|:-----|:--------|
-| Language | All code, comments, commits, and documentation in English |
-| Commits | Conventional Commits only: `feat(scope): description` |
-| Branches | Feature branches, squash-merge to main |
-| Testing | `go test -race ./...` must pass |
-| Logging | Use `log/slog` only, never log metadata |
-| Security | Report vulnerabilities via GitHub Security Advisories |
-
----
-
-## Documentation
-
-| Resource | Link |
-|:---------|:-----|
-| Full documentation | [wiki.gorelay.dev](https://wiki.gorelay.dev) |
-| SMP protocol specification | [simplex-messaging.md](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md) |
-| Architecture overview | [docs/architecture/01-overview.md](docs/architecture/01-overview.md) |
-| Queue store schema | [docs/architecture/03-queue-store.md](docs/architecture/03-queue-store.md) |
-| TLS certificate setup | [docs/deployment/05-tls-certificates.md](docs/deployment/05-tls-certificates.md) |
+Security vulnerabilities should be reported privately via GitHub Security Advisories.
 
 ---
 
 ## License
 
-| Component | License |
-|:----------|:--------|
-| Software | [AGPL-3.0](LICENSE) |
+AGPL-3.0 - See [LICENSE](LICENSE) for details.
+
+---
 
 ## Acknowledgments
 
-[SimpleX Chat](https://simplex.chat/) by Evgeny Poberezkin - protocol specification and the foundation that makes this project possible. GoRelay builds on the open SMP protocol to extend the SimpleX ecosystem with a Go server implementation.
+GoRelay builds on the open SimpleX Messaging Protocol for interoperable message delivery. The SMP specification and the work of the SimpleX community made this project possible.
 
-[Espressif](https://www.espressif.com/) (ESP32 platform for SimpleGo) - [BadgerDB](https://github.com/dgraph-io/badger) (embedded storage) - [flynn/noise](https://github.com/flynn/noise) (Noise Protocol Framework)
+[BadgerDB](https://github.com/dgraph-io/badger) (embedded storage) - [flynn/noise](https://github.com/flynn/noise) (Noise Protocol Framework) - [Go](https://go.dev/) (language and runtime)
 
 ---
 
 <p align="center">
   <i>GoRelay is an independent open-source project by IT and More Systems, Recklinghausen, Germany.</i><br>
-  <i>GoRelay uses the open-source SimpleX Messaging Protocol (AGPL-3.0) for interoperable message delivery.</i><br>
   <i>It is not affiliated with or endorsed by any third party.</i>
 </p>
 
