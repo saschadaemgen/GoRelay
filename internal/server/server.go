@@ -6,9 +6,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
@@ -157,7 +159,10 @@ func (s *Server) listenSMP(ctx context.Context) error {
 			}
 		}
 
+		slog.Debug("SMP raw TCP connection accepted", "remote", conn.RemoteAddr().String())
+
 		if s.connectionCount.Load() >= int64(s.config.Limits.MaxConnections) {
+			slog.Warn("SMP connection rejected: max connections reached", "remote", conn.RemoteAddr().String())
 			conn.Close()
 			continue
 		}
@@ -224,21 +229,39 @@ func (s *Server) listenGRP(ctx context.Context) error {
 
 // handleSMPConnection handles a single SMP client connection
 func (s *Server) handleSMPConnection(ctx context.Context, conn net.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("PANIC in handleSMPConnection", "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
 	defer conn.Close()
+
+	slog.Debug("SMP connection accepted", "remote", conn.RemoteAddr().String())
 
 	tlsConn, ok := conn.(*tls.Conn)
 	if !ok {
+		slog.Error("connection is not TLS", "remote", conn.RemoteAddr().String())
 		return
 	}
 
 	// Complete TLS handshake
+	slog.Debug("starting TLS handshake", "remote", conn.RemoteAddr().String())
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		slog.Error("TLS handshake failed", "err", err, "remote", conn.RemoteAddr().String())
 		return
 	}
 
 	// Check ALPN - do not reject, but track for version range
 	state := tlsConn.ConnectionState()
 	alpnConfirmed := state.NegotiatedProtocol == "smp/1"
+
+	slog.Debug("TLS handshake complete",
+		"version", fmt.Sprintf("0x%04x", state.Version),
+		"cipher", fmt.Sprintf("0x%04x", state.CipherSuite),
+		"alpn", state.NegotiatedProtocol,
+		"alpn_confirmed", alpnConfirmed,
+		"tls_unique_len", len(state.TLSUnique),
+	)
 
 	// Extract TLS channel binding (tls-unique / RFC 5929).
 	// With TLS 1.2 this is the client's Finished message, matching
@@ -261,9 +284,10 @@ func (s *Server) handleSMPConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	// SMP version handshake (inside 16 KB block framing)
+	slog.Debug("starting SMP handshake")
 	hsResult, err := smp.ServerHandshake(tlsConn, params)
 	if err != nil {
-		slog.Debug("SMP handshake failed", "err", err)
+		slog.Error("SMP handshake failed", "err", err)
 		return
 	}
 
@@ -279,11 +303,39 @@ func (s *Server) handleSMPConnection(ctx context.Context, conn net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(3)
 
-	go func() { defer wg.Done(); defer cancel(); s.receiver(ctx, client) }()
-	go func() { defer wg.Done(); defer cancel(); s.processor(ctx, client) }()
-	go func() { defer wg.Done(); defer cancel(); s.sender(ctx, client) }()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("PANIC in receiver", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
+		defer wg.Done()
+		defer cancel()
+		s.receiver(ctx, client)
+	}()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("PANIC in processor", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
+		defer wg.Done()
+		defer cancel()
+		s.processor(ctx, client)
+	}()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("PANIC in sender", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
+		defer wg.Done()
+		defer cancel()
+		s.sender(ctx, client)
+	}()
 
 	wg.Wait()
+	slog.Debug("SMP connection handler exiting")
 }
 
 // handleGRPConnection handles a single GRP client connection
@@ -309,9 +361,11 @@ func (s *Server) handleGRPConnection(ctx context.Context, conn net.Conn) {
 
 // receiver reads 16 KB blocks from the connection
 func (s *Server) receiver(ctx context.Context, c *Client) {
+	slog.Debug("receiver goroutine started")
 	for {
 		select {
 		case <-ctx.Done():
+			slog.Debug("receiver: context cancelled")
 			return
 		default:
 		}
@@ -319,19 +373,26 @@ func (s *Server) receiver(ctx context.Context, c *Client) {
 		c.conn.SetReadDeadline(common.ReadDeadline())
 		block, err := common.ReadBlock(c.conn)
 		if err != nil {
+			slog.Debug("receiver: read block failed", "err", err)
 			return
 		}
 
+		slog.Debug("receiver: got block", "first32", hex.EncodeToString(block[:min(32, len(block))]))
+
 		cmds, err := common.ParsePayload(block)
 		if err != nil {
-			slog.Debug("parse error", "err", err)
+			slog.Debug("receiver: parse error", "err", err, "first32", hex.EncodeToString(block[:min(32, len(block))]))
 			continue
 		}
 
+		slog.Debug("receiver: parsed commands", "count", len(cmds))
+
 		for _, cmd := range cmds {
+			slog.Debug("receiver: dispatching command", "type", fmt.Sprintf("0x%02x", cmd.Type))
 			select {
 			case c.rcvQ <- cmd:
 			case <-ctx.Done():
+				slog.Debug("receiver: context cancelled during dispatch")
 				return
 			}
 		}
@@ -340,17 +401,22 @@ func (s *Server) receiver(ctx context.Context, c *Client) {
 
 // processor handles commands from the receive queue
 func (s *Server) processor(ctx context.Context, c *Client) {
+	slog.Debug("processor goroutine started")
 	for {
 		select {
 		case <-ctx.Done():
+			slog.Debug("processor: context cancelled")
 			return
 		case cmd := <-c.rcvQ:
+			slog.Debug("processor: handling command", "type", fmt.Sprintf("0x%02x", cmd.Type))
 			resp := s.dispatch(c, cmd)
+			slog.Debug("processor: response ready", "type", fmt.Sprintf("0x%02x", resp.Type), "deliveries", len(resp.Deliveries))
 			deliveries := resp.Deliveries
 			resp.Deliveries = nil
 			select {
 			case c.sndQ <- resp:
 			case <-ctx.Done():
+				slog.Debug("processor: context cancelled during send")
 				return
 			}
 			// Send follow-up deliveries after the primary response
@@ -367,13 +433,17 @@ func (s *Server) processor(ctx context.Context, c *Client) {
 
 // sender writes responses as 16 KB blocks
 func (s *Server) sender(ctx context.Context, c *Client) {
+	slog.Debug("sender goroutine started")
 	for {
 		select {
 		case <-ctx.Done():
+			slog.Debug("sender: context cancelled")
 			return
 		case resp := <-c.sndQ:
+			slog.Debug("sender: writing response", "type", fmt.Sprintf("0x%02x", resp.Type))
 			c.conn.SetWriteDeadline(common.WriteDeadline())
 			if err := common.WriteBlock(c.conn, resp.Serialize()); err != nil {
+				slog.Debug("sender: write block failed", "err", err)
 				return
 			}
 		}

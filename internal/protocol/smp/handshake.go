@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 
 	"github.com/saschadaemgen/GoRelay/internal/protocol/common"
@@ -299,6 +300,14 @@ func DecodeClientHello(data []byte) (*ClientHello, error) {
 // reads ClientHello, verifies the CA fingerprint, negotiates the version,
 // and optionally computes a DH shared secret.
 func ServerHandshake(conn net.Conn, params ServerHandshakeParams) (*HandshakeResult, error) {
+	slog.Debug("ServerHandshake: starting",
+		"version_min", params.VersionMin,
+		"version_max", params.VersionMax,
+		"alpn_confirmed", params.ALPNConfirmed,
+		"session_id_len", len(params.SessionID),
+		"cert_der_len", len(params.OnlineCertDER),
+	)
+
 	// Determine version range based on ALPN
 	vMin := params.VersionMin
 	vMax := params.VersionMax
@@ -329,27 +338,50 @@ func ServerHandshake(conn net.Conn, params ServerHandshakeParams) (*HandshakeRes
 		DHKeySignature: dhKeySig,
 	}
 
+	slog.Debug("ServerHandshake: sending ServerHello",
+		"version_min", vMin,
+		"version_max", vMax,
+		"dh_pub_spki_len", len(dhPubSPKI),
+		"dh_sig_len", len(dhKeySig),
+	)
+
 	if err := common.WriteBlock(conn, hello.Encode()); err != nil {
 		zeroECDHKey(privKey)
 		return nil, fmt.Errorf("write server hello: %w", err)
 	}
 
+	slog.Debug("ServerHandshake: ServerHello sent, waiting for ClientHello")
+
 	// Read ClientHello
 	payload, err := common.ReadBlock(conn)
 	if err != nil {
 		zeroECDHKey(privKey)
+		slog.Debug("ServerHandshake: failed to read ClientHello", "err", err)
 		return nil, fmt.Errorf("read client hello: %w", err)
 	}
+
+	slog.Debug("ServerHandshake: received ClientHello", "payload_len", len(payload))
 
 	clientHello, err := DecodeClientHello(payload)
 	if err != nil {
 		zeroECDHKey(privKey)
+		slog.Debug("ServerHandshake: failed to decode ClientHello", "err", err)
 		return nil, fmt.Errorf("decode client hello: %w", err)
 	}
+
+	slog.Debug("ServerHandshake: decoded ClientHello",
+		"client_version", clientHello.Version,
+		"key_hash_len", len(clientHello.KeyHash),
+		"client_key_len", len(clientHello.ClientKey),
+	)
 
 	// Verify CA fingerprint
 	if clientHello.KeyHash != params.CAFingerprint {
 		zeroECDHKey(privKey)
+		slog.Debug("ServerHandshake: CA fingerprint mismatch",
+			"expected_len", len(params.CAFingerprint),
+			"got_len", len(clientHello.KeyHash),
+		)
 		return nil, ErrIdentityMismatch
 	}
 
@@ -357,8 +389,11 @@ func ServerHandshake(conn net.Conn, params ServerHandshakeParams) (*HandshakeRes
 	version, err := negotiateVersion(vMin, vMax, clientHello.Version)
 	if err != nil {
 		zeroECDHKey(privKey)
+		slog.Debug("ServerHandshake: version negotiation failed", "err", err)
 		return nil, err
 	}
+
+	slog.Debug("ServerHandshake: version negotiated", "version", version)
 
 	result := &HandshakeResult{
 		Version:   version,
@@ -388,6 +423,7 @@ func ServerHandshake(conn net.Conn, params ServerHandshakeParams) (*HandshakeRes
 	}
 
 	zeroECDHKey(privKey)
+	slog.Debug("ServerHandshake: complete", "version", result.Version)
 	return result, nil
 }
 
