@@ -3,6 +3,8 @@ package common
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
+	"log/slog"
 )
 
 // SMP text command tags (wire format uses ASCII strings, not byte codes)
@@ -398,7 +400,16 @@ func parseTextCommand(data []byte) (byte, []byte) {
 		}
 	}
 
-	// Unknown command
+	// Unknown command - log first 20 bytes for debugging
+	n := len(data)
+	if n > 20 {
+		n = 20
+	}
+	slog.Info("parseTextCommand: no tag match",
+		"first_bytes_hex", hex.EncodeToString(data[:n]),
+		"first_bytes_ascii", string(data[:n]),
+		"data_len", len(data),
+	)
 	return 0xFF, nil
 }
 

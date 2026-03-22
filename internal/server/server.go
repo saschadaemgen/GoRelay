@@ -380,7 +380,7 @@ func (s *Server) receiver(ctx context.Context, c *Client) {
 			return
 		}
 
-		slog.Debug("receiver: got block", "first32", hex.EncodeToString(block[:min(32, len(block))]))
+		slog.Info("receiver: got block", "first32", hex.EncodeToString(block[:min(32, len(block))]))
 
 		cmds, err := common.ParsePayload(block)
 		if err != nil {
