@@ -168,10 +168,10 @@ func TestPingPongSingleRoundTrip(t *testing.T) {
 		t.Fatalf("invalid payload length: %d", payloadLen)
 	}
 
-	// Verify zero padding
+	// Verify '#' padding per SMP spec
 	for i := 2 + int(payloadLen); i < common.BlockSize; i++ {
-		if resp[i] != 0x00 {
-			t.Fatalf("padding byte at offset %d: got 0x%02x, want 0x00", i, resp[i])
+		if resp[i] != common.PaddingByte {
+			t.Fatalf("padding byte at offset %d: got 0x%02x, want 0x%02x", i, resp[i], common.PaddingByte)
 		}
 	}
 
@@ -278,11 +278,11 @@ func TestPingPongPaddingCharacter(t *testing.T) {
 
 	block := buildPINGBlock(corrID)
 
-	// Verify PING block zero padding
+	// Verify PING block '#' padding
 	pingPayloadLen := binary.BigEndian.Uint16(block[:2])
 	for i := 2 + int(pingPayloadLen); i < common.BlockSize; i++ {
-		if block[i] != 0x00 {
-			t.Fatalf("PING padding at %d: got 0x%02x, want 0x00", i, block[i])
+		if block[i] != common.PaddingByte {
+			t.Fatalf("PING padding at %d: got 0x%02x, want 0x%02x", i, block[i], common.PaddingByte)
 		}
 	}
 
@@ -291,12 +291,12 @@ func TestPingPongPaddingCharacter(t *testing.T) {
 		t.Fatalf("write PING: %v", err)
 	}
 
-	// Verify PONG block zero padding
+	// Verify PONG block '#' padding
 	resp := readRawBlock(t, conn)
 	pongPayloadLen := binary.BigEndian.Uint16(resp[:2])
 	for i := 2 + int(pongPayloadLen); i < common.BlockSize; i++ {
-		if resp[i] != 0x00 {
-			t.Fatalf("PONG padding at %d: got 0x%02x, want 0x00", i, resp[i])
+		if resp[i] != common.PaddingByte {
+			t.Fatalf("PONG padding at %d: got 0x%02x, want 0x%02x", i, resp[i], common.PaddingByte)
 		}
 	}
 }

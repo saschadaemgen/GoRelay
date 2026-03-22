@@ -401,7 +401,10 @@ func WrapTransmissionBlock(transmission []byte) [BlockSize]byte {
 	var block [BlockSize]byte
 	binary.BigEndian.PutUint16(block[:2], uint16(len(content)))
 	copy(block[2:], content)
-	// Remaining bytes are zero (Go default) = zero padding per SMP spec
+	// Pad with '#' (0x23) per SMP spec: pad = N*"#"
+	for i := 2 + len(content); i < BlockSize; i++ {
+		block[i] = PaddingByte
+	}
 	return block
 }
 

@@ -9,6 +9,7 @@
 vendor/
 /gorelay
 /gorelay-arm64
+bin/
 
 # Docusaurus
 wiki/node_modules/

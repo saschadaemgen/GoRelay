@@ -17,8 +17,8 @@ const (
 	MaxPayloadSize = BlockSize - 2
 
 	// PaddingByte is the byte used to pad blocks to BlockSize.
-	// SMP specification requires zero-byte padding.
-	PaddingByte = 0x00
+	// SMP specification: pad = N*"#" (0x23).
+	PaddingByte = '#'
 )
 
 var (
@@ -56,8 +56,10 @@ func WriteBlock(conn net.Conn, payload []byte) error {
 	binary.BigEndian.PutUint16(block[:2], uint16(len(payload)))
 	copy(block[2:], payload)
 
-	// Pad with zero bytes (block is already zero-initialized)
-	// No explicit padding loop needed since Go initializes arrays to zero.
+	// Pad with '#' (0x23) per SMP spec: pad = N*"#"
+	for i := 2 + len(payload); i < BlockSize; i++ {
+		block[i] = PaddingByte
+	}
 
 	_, err := conn.Write(block[:])
 	return err

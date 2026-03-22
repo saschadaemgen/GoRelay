@@ -36,10 +36,10 @@ func TestWriteBlock_PadsToExactSize(t *testing.T) {
 		t.Fatalf("payload mismatch")
 	}
 
-	// Verify zero padding
+	// Verify '#' padding per SMP spec
 	for i := 2 + int(length); i < BlockSize; i++ {
 		if block[i] != PaddingByte {
-			t.Fatalf("expected padding byte 0x00 at position %d, got 0x%02x", i, block[i])
+			t.Fatalf("expected padding byte 0x%02x ('#') at position %d, got 0x%02x", PaddingByte, i, block[i])
 		}
 	}
 }
@@ -125,14 +125,14 @@ func TestParsePayload_NEW(t *testing.T) {
 	}
 }
 
-func TestBlockPaddingIsZero(t *testing.T) {
+func TestBlockPaddingIsHash(t *testing.T) {
 	t2 := BuildTransmission(nil, [CorrIDSize]byte{}, nil, TagPING, nil)
 	block := WrapTransmissionBlock(t2)
 
 	payloadLen := binary.BigEndian.Uint16(block[:2])
 	for i := 2 + int(payloadLen); i < BlockSize; i++ {
-		if block[i] != 0x00 {
-			t.Fatalf("padding at offset %d: got 0x%02x, want 0x00", i, block[i])
+		if block[i] != PaddingByte {
+			t.Fatalf("padding at offset %d: got 0x%02x, want 0x%02x ('#')", i, block[i], PaddingByte)
 		}
 	}
 }
