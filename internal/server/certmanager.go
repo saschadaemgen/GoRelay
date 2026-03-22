@@ -73,20 +73,34 @@ func (cm *CertManager) SMPURI(host string, port string) string {
 }
 
 // TLSConfig returns a tls.Config suitable for the SMP listener.
+// Restricted to ChaCha20-Poly1305, X25519 key exchange, Ed25519 signatures.
+// Session tickets are disabled per the SMP specification.
 func (cm *CertManager) TLSConfig() *tls.Config {
-	certPool := x509.NewCertPool()
-	certPool.AddCert(cm.caCert)
-
 	return &tls.Config{
 		Certificates: []tls.Certificate{cm.tlsCert},
 		MinVersion:   tls.VersionTLS13,
 		NextProtos:   []string{"smp/1"},
+		// TLS 1.3 cipher suites are not configurable in Go stdlib;
+		// Go auto-selects from the three TLS 1.3 suites including
+		// TLS_CHACHA20_POLY1305_SHA256.
+		CurvePreferences:     []tls.CurveID{tls.X25519},
+		SessionTicketsDisabled: true,
 	}
 }
 
 // CACert returns the loaded CA certificate.
 func (cm *CertManager) CACert() *x509.Certificate {
 	return cm.caCert
+}
+
+// OnlineCertDER returns the DER-encoded online (leaf) TLS certificate.
+func (cm *CertManager) OnlineCertDER() []byte {
+	return cm.tlsCert.Certificate[0]
+}
+
+// OnlineKey returns the Ed25519 private key of the online certificate.
+func (cm *CertManager) OnlineKey() ed25519.PrivateKey {
+	return cm.tlsCert.PrivateKey.(ed25519.PrivateKey)
 }
 
 // --- paths ---

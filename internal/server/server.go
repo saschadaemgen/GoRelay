@@ -18,6 +18,7 @@ import (
 	"github.com/saschadaemgen/GoRelay/internal/queue"
 )
 
+
 // Server is the core GoRelay server
 type Server struct {
 	config          *config.Config
@@ -235,14 +236,30 @@ func (s *Server) handleSMPConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Verify ALPN
+	// Check ALPN - do not reject, but track for version range
 	state := tlsConn.ConnectionState()
-	if state.NegotiatedProtocol != "smp/1" {
-		return
+	alpnConfirmed := state.NegotiatedProtocol == "smp/1"
+
+	// Extract TLS channel binding (tls-unique).
+	// In TLS 1.3 with Go stdlib, TLSUnique is empty because RFC 8446
+	// does not define tls-unique. The Haskell tls library provides
+	// getPeerFinished even for TLS 1.3. This is a known limitation
+	// when running with Go's TLS 1.3 implementation.
+	sessionID := state.TLSUnique
+
+	// Build handshake parameters
+	params := smp.ServerHandshakeParams{
+		OnlineCertDER: s.certManager.OnlineCertDER(),
+		OnlineKey:     s.certManager.OnlineKey(),
+		CAFingerprint: s.certManager.Fingerprint(),
+		SessionID:     sessionID,
+		VersionMin:    smp.SMPVersionMin,
+		VersionMax:    smp.SMPVersionMax,
+		ALPNConfirmed: alpnConfirmed,
 	}
 
-	// SMP version handshake (inside 16KB block framing)
-	hsResult, err := smp.ServerHandshake(tlsConn)
+	// SMP version handshake (inside 16 KB block framing)
+	hsResult, err := smp.ServerHandshake(tlsConn, params)
 	if err != nil {
 		slog.Debug("SMP handshake failed", "err", err)
 		return

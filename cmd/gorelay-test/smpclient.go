@@ -37,11 +37,28 @@ func ConnectSMP(addr string, skipVerify bool, verbose bool) (*SMPClient, error) 
 		return nil, fmt.Errorf("TLS dial: %w", err)
 	}
 
+	state := conn.ConnectionState()
 	if verbose {
-		fmt.Printf("  TLS connected to %s (ALPN: %s)\n", addr, conn.ConnectionState().NegotiatedProtocol)
+		fmt.Printf("  TLS connected to %s (ALPN: %s)\n", addr, state.NegotiatedProtocol)
 	}
 
-	result, err := smp.ClientHandshake(conn, smp.SMPVersionMin, smp.SMPVersionMax)
+	// Derive CA fingerprint from TLS peer certificate chain.
+	// PeerCertificates[0] = online cert, PeerCertificates[1] = CA cert.
+	caFingerprint := ""
+	if len(state.PeerCertificates) >= 2 {
+		caFingerprint = smp.ComputeCAFingerprint(state.PeerCertificates[1])
+	} else if len(state.PeerCertificates) >= 1 {
+		caFingerprint = smp.ComputeCAFingerprint(state.PeerCertificates[0])
+	}
+
+	params := smp.ClientHandshakeParams{
+		CAFingerprint: caFingerprint,
+		SessionID:     state.TLSUnique,
+		VersionMin:    smp.SMPVersionMin,
+		VersionMax:    smp.SMPVersionMax,
+	}
+
+	result, err := smp.ClientHandshake(conn, params)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("SMP handshake: %w", err)
@@ -49,11 +66,6 @@ func ConnectSMP(addr string, skipVerify bool, verbose bool) (*SMPClient, error) 
 
 	if verbose {
 		fmt.Printf("  SMP handshake OK (version %d)\n", result.Version)
-	}
-
-	// Zero shared secret - not needed for this tool
-	for i := range result.SharedSecret {
-		result.SharedSecret[i] = 0
 	}
 
 	return &SMPClient{conn: conn, verbose: verbose}, nil

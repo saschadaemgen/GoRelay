@@ -85,8 +85,25 @@ func dialSMP(t *testing.T, addr string) net.Conn {
 		t.Fatalf("dial TLS: %v", err)
 	}
 
+	// Derive CA fingerprint from the TLS peer certificate chain.
+	// PeerCertificates[0] is the online cert, PeerCertificates[1] is the CA.
+	state := conn.ConnectionState()
+	caFingerprint := ""
+	if len(state.PeerCertificates) >= 2 {
+		caFingerprint = smp.ComputeCAFingerprint(state.PeerCertificates[1])
+	} else if len(state.PeerCertificates) >= 1 {
+		// fallback: single cert acts as CA
+		caFingerprint = smp.ComputeCAFingerprint(state.PeerCertificates[0])
+	}
+
 	// Perform SMP version handshake
-	_, err = smp.ClientHandshake(conn, smp.SMPVersionMin, smp.SMPVersionMax)
+	params := smp.ClientHandshakeParams{
+		CAFingerprint: caFingerprint,
+		SessionID:     state.TLSUnique,
+		VersionMin:    smp.SMPVersionMin,
+		VersionMax:    smp.SMPVersionMax,
+	}
+	_, err = smp.ClientHandshake(conn, params)
 	if err != nil {
 		conn.Close()
 		t.Fatalf("client handshake: %v", err)
