@@ -120,7 +120,7 @@ func TestFullTestSubcommand(t *testing.T) {
 		t.Fatalf("keygen: %v", err)
 	}
 
-	if err := senderClient.SendKEY(senderID, senderPub); err != nil {
+	if err := senderClient.SendKEY(recipientID, senderPub); err != nil {
 		t.Fatalf("KEY: %v", err)
 	}
 

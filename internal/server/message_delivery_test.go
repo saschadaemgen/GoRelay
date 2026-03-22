@@ -14,14 +14,15 @@ import (
 )
 
 // buildKEYBlock constructs a 16KB block containing a KEY command.
+// KEY is a recipient command - entityID = recipientID.
 // Body: shortString(SPKI DER Ed25519 sender key)
-func buildKEYBlock(corrID [24]byte, senderID [24]byte, senderPubKey ed25519.PublicKey) [common.BlockSize]byte {
+func buildKEYBlock(corrID [24]byte, recipientID [24]byte, senderPubKey ed25519.PublicKey) [common.BlockSize]byte {
 	keySPKI := smp.EncodeEd25519SPKI(senderPubKey)
 	body := make([]byte, 0, 1+len(keySPKI))
 	body = append(body, byte(len(keySPKI)))
 	body = append(body, keySPKI...)
 
-	t := common.BuildTransmission(nil, corrID, senderID[:], common.TagKEY, body)
+	t := common.BuildTransmission(nil, corrID, recipientID[:], common.TagKEY, body)
 	return common.WrapTransmissionBlock(t)
 }
 
@@ -106,7 +107,7 @@ func TestKEYSetsSenderKeyReturnsOK(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, senderID := createQueueOnConn(t, conn, recipientPub)
+	recipientID, _ := createQueueOnConn(t, conn, recipientPub)
 
 	senderPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -118,7 +119,7 @@ func TestKEYSetsSenderKeyReturnsOK(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := sendAndReadResponse(t, conn, buildKEYBlock(corrID, senderID, senderPub))
+	cmd := sendAndReadResponse(t, conn, buildKEYBlock(corrID, recipientID, senderPub))
 	if cmd.Type != common.CmdOK {
 		t.Fatalf("KEY: expected OK, got 0x%02x", cmd.Type)
 	}
@@ -136,7 +137,7 @@ func TestKEYTwiceReturnsAuthError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, senderID := createQueueOnConn(t, conn, recipientPub)
+	recipientID, _ := createQueueOnConn(t, conn, recipientPub)
 
 	senderPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -147,7 +148,7 @@ func TestKEYTwiceReturnsAuthError(t *testing.T) {
 	if _, err := rand.Read(corrID1[:]); err != nil {
 		t.Fatal(err)
 	}
-	cmd1 := sendAndReadResponse(t, conn, buildKEYBlock(corrID1, senderID, senderPub))
+	cmd1 := sendAndReadResponse(t, conn, buildKEYBlock(corrID1, recipientID, senderPub))
 	if cmd1.Type != common.CmdOK {
 		t.Fatalf("KEY 1: expected OK, got 0x%02x", cmd1.Type)
 	}
@@ -156,7 +157,7 @@ func TestKEYTwiceReturnsAuthError(t *testing.T) {
 	if _, err := rand.Read(corrID2[:]); err != nil {
 		t.Fatal(err)
 	}
-	cmd2 := sendAndReadResponse(t, conn, buildKEYBlock(corrID2, senderID, senderPub))
+	cmd2 := sendAndReadResponse(t, conn, buildKEYBlock(corrID2, recipientID, senderPub))
 	if cmd2.Type != common.CmdERR {
 		t.Fatalf("KEY 2: expected ERR, got 0x%02x", cmd2.Type)
 	}
@@ -210,19 +211,19 @@ func TestSENDWithValidSignatureReturnsOK(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, senderID := createQueueOnConn(t, conn, recipientPub)
+	recipientID, senderID := createQueueOnConn(t, conn, recipientPub)
 
 	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Set sender key
+	// Set sender key (KEY uses recipientID as entityID)
 	var keyCorrID [24]byte
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatal(err)
 	}
-	keyCmd := sendAndReadResponse(t, conn, buildKEYBlock(keyCorrID, senderID, senderPub))
+	keyCmd := sendAndReadResponse(t, conn, buildKEYBlock(keyCorrID, recipientID, senderPub))
 	if keyCmd.Type != common.CmdOK {
 		t.Fatalf("KEY: expected OK, got 0x%02x", keyCmd.Type)
 	}
@@ -266,7 +267,7 @@ func TestSENDDeliversMSGToSubscribedRecipient(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatal(err)
 	}
-	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
+	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, recipientID, senderPub))
 	if keyCmd.Type != common.CmdOK {
 		t.Fatalf("KEY: expected OK, got 0x%02x", keyCmd.Type)
 	}
@@ -289,7 +290,6 @@ func TestSENDDeliversMSGToSubscribedRecipient(t *testing.T) {
 		t.Fatalf("MSG body: got %q, want %q", body, msgContent)
 	}
 
-	_ = recipientID
 }
 
 func TestSENDWhenRecipientNotSubscribed(t *testing.T) {
@@ -302,7 +302,7 @@ func TestSENDWhenRecipientNotSubscribed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, senderID := createQueueOnConn(t, connA, recipientPub)
+	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
 	connA.Close() // disconnect recipient
 
 	time.Sleep(50 * time.Millisecond) // let server process disconnect
@@ -320,7 +320,7 @@ func TestSENDWhenRecipientNotSubscribed(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatal(err)
 	}
-	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
+	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, recipientID, senderPub))
 	if keyCmd.Type != common.CmdOK {
 		t.Fatalf("KEY: expected OK, got 0x%02x", keyCmd.Type)
 	}
@@ -360,7 +360,7 @@ func TestACKDeletesMessageReturnsOK(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatal(err)
 	}
-	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, recipientID, senderPub))
 
 	var sendCorrID [24]byte
 	if _, err := rand.Read(sendCorrID[:]); err != nil {
@@ -408,7 +408,7 @@ func TestACKDeliversNextPendingMessage(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatal(err)
 	}
-	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, recipientID, senderPub))
 
 	// Send two messages
 	for i := 0; i < 2; i++ {
@@ -473,7 +473,7 @@ func TestACKIdempotent(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatal(err)
 	}
-	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, recipientID, senderPub))
 
 	var sendCorrID [24]byte
 	if _, err := rand.Read(sendCorrID[:]); err != nil {
@@ -531,7 +531,7 @@ func TestFullCycleNEWtoKEYtoSENDtoMSGtoACK(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatal(err)
 	}
-	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
+	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, recipientID, senderPub))
 	if keyCmd.Type != common.CmdOK {
 		t.Fatalf("KEY: expected OK, got 0x%02x", keyCmd.Type)
 	}
@@ -600,7 +600,7 @@ func TestMultipleMessagesFIFOOrder(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatal(err)
 	}
-	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, recipientID, senderPub))
 
 	msgs := []string{"first", "second", "third"}
 	for _, m := range msgs {

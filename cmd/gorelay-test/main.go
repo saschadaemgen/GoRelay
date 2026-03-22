@@ -401,7 +401,7 @@ func runFullTest() int {
 		return fail("keygen: %v", err)
 	}
 
-	if err := senderClient.SendKEY(senderID, senderPub); err != nil {
+	if err := senderClient.SendKEY(recipientID, senderPub); err != nil {
 		return fail("KEY: %v", err)
 	}
 	ok(time.Since(stepStart))

@@ -190,7 +190,8 @@ func (c *SMPClient) SendNEW(recipientPub ed25519.PublicKey) (recipientID, sender
 }
 
 // SendKEY sets the sender key for a queue.
-func (c *SMPClient) SendKEY(senderID [24]byte, senderPub ed25519.PublicKey) error {
+// KEY is a recipient command - entityID = recipientID.
+func (c *SMPClient) SendKEY(recipientID [24]byte, senderPub ed25519.PublicKey) error {
 	var corrID [24]byte
 	if _, err := rand.Read(corrID[:]); err != nil {
 		return fmt.Errorf("generate corrID: %w", err)
@@ -201,7 +202,7 @@ func (c *SMPClient) SendKEY(senderID [24]byte, senderPub ed25519.PublicKey) erro
 	body = append(body, byte(len(keySPKI)))
 	body = append(body, keySPKI...)
 
-	t := common.BuildTransmission(nil, corrID, senderID[:], common.TagKEY, body)
+	t := common.BuildTransmission(nil, corrID, recipientID[:], common.TagKEY, body)
 	block := common.WrapTransmissionBlock(t)
 	if err := c.writeBlock(block); err != nil {
 		return err

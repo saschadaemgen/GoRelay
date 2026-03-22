@@ -41,7 +41,7 @@ func TestIntegrationCompleteFlow(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatalf("corrID: %v", err)
 	}
-	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
+	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, recipientID, senderPub))
 	if keyCmd.Type != common.CmdOK {
 		t.Fatalf("KEY: expected OK, got 0x%02x", keyCmd.Type)
 	}
@@ -109,7 +109,7 @@ func TestIntegrationSubscriptionTakeover(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatalf("corrID: %v", err)
 	}
-	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, recipientID, senderPub))
 
 	connC, sessCID := dialSMPWithSession(t, addr)
 	defer connC.Close()
@@ -180,7 +180,7 @@ func TestIntegrationFIFOThreeMessages(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatalf("corrID: %v", err)
 	}
-	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, recipientID, senderPub))
 
 	messages := []string{"alpha", "bravo", "charlie"}
 	for _, content := range messages {
@@ -294,7 +294,7 @@ func TestIntegrationACKIdempotent(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatalf("corrID: %v", err)
 	}
-	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, recipientID, senderPub))
 
 	var sendCorrID [24]byte
 	if _, err := rand.Read(sendCorrID[:]); err != nil {
@@ -406,7 +406,7 @@ func TestIntegrationKEYTwice(t *testing.T) {
 		t.Fatalf("gen key: %v", err)
 	}
 
-	_, senderID := createQueueOnConn(t, conn, recipientPub)
+	recipientID, _ := createQueueOnConn(t, conn, recipientPub)
 
 	senderPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -417,7 +417,7 @@ func TestIntegrationKEYTwice(t *testing.T) {
 	if _, err := rand.Read(corrID1[:]); err != nil {
 		t.Fatalf("corrID: %v", err)
 	}
-	cmd1 := sendAndReadResponse(t, conn, buildKEYBlock(corrID1, senderID, senderPub))
+	cmd1 := sendAndReadResponse(t, conn, buildKEYBlock(corrID1, recipientID, senderPub))
 	if cmd1.Type != common.CmdOK {
 		t.Fatalf("first KEY: expected OK, got 0x%02x", cmd1.Type)
 	}
@@ -430,7 +430,7 @@ func TestIntegrationKEYTwice(t *testing.T) {
 	if _, err := rand.Read(corrID2[:]); err != nil {
 		t.Fatalf("corrID: %v", err)
 	}
-	cmd2 := sendAndReadResponse(t, conn, buildKEYBlock(corrID2, senderID, senderPub2))
+	cmd2 := sendAndReadResponse(t, conn, buildKEYBlock(corrID2, recipientID, senderPub2))
 	if cmd2.Type != common.CmdERR {
 		t.Fatalf("second KEY: expected ERR, got 0x%02x", cmd2.Type)
 	}
@@ -506,7 +506,7 @@ func TestIntegrationSUBDeliversPendingMessage(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatalf("corrID: %v", err)
 	}
-	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, recipientID, senderPub))
 
 	var sendCorrID [24]byte
 	if _, err := rand.Read(sendCorrID[:]); err != nil {
@@ -668,7 +668,7 @@ func TestIntegrationDeliveryCounterViaNetwork(t *testing.T) {
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
 		t.Fatalf("corrID: %v", err)
 	}
-	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, recipientID, senderPub))
 
 	var sendCorrID [24]byte
 	if _, err := rand.Read(sendCorrID[:]); err != nil {

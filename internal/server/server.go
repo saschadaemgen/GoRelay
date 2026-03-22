@@ -607,6 +607,11 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 	}
 	s.metrics.ActiveQueues.Add(1)
 
+	slog.Debug("NEW: queue created",
+		"recipient_id_hex", hex.EncodeToString(q.RecipientID[:]),
+		"sender_id_hex", hex.EncodeToString(q.SenderID[:]),
+	)
+
 	// Generate server DH keypair if not already set (new queue)
 	if q.ServerDHPubKey == nil {
 		dhPriv, dhErr := ecdh.X25519().GenerateKey(rand.Reader)
@@ -772,7 +777,8 @@ func (s *Server) handleSUB(c *Client, cmd common.Command) common.Response {
 }
 
 // handleKEY sets the sender's public key on a queue (one-time operation).
-// The command uses senderID as entityID.
+// KEY is a recipient command - entityID = recipientID.
+// The sender uses the recipientID (from IDS response) to set their key.
 func (s *Server) handleKEY(c *Client, cmd common.Command) common.Response {
 	errResp := common.Response{
 		Type:          common.CmdERR,
@@ -784,31 +790,50 @@ func (s *Server) handleKEY(c *Client, cmd common.Command) common.Response {
 		return errResp
 	}
 
+	slog.Debug("KEY command",
+		"entity_id_hex", hex.EncodeToString(cmd.EntityID[:]),
+		"has_entity_id", cmd.HasEntityID,
+		"body_len", len(cmd.Body),
+	)
+
 	// Body: shortString(SPKI DER Ed25519 sender key)
 	if len(cmd.Body) < 1 {
-		errResp.ErrorCode = common.ErrInternal
+		errResp.ErrorCode = common.ErrCmdSyntax
 		return errResp
 	}
 	keyLen := int(cmd.Body[0])
 	if 1+keyLen > len(cmd.Body) {
-		errResp.ErrorCode = common.ErrInternal
+		errResp.ErrorCode = common.ErrCmdSyntax
 		return errResp
 	}
 	keySPKI := cmd.Body[1 : 1+keyLen]
 
 	senderKey, parseErr := smp.ParseEd25519SPKI(keySPKI)
 	if parseErr != nil {
-		// Fallback: try raw 32-byte key for backward compatibility with tests
-		if len(cmd.Body) >= ed25519.PublicKeySize {
-			senderKey = make(ed25519.PublicKey, ed25519.PublicKeySize)
-			copy(senderKey, cmd.Body[:ed25519.PublicKeySize])
-		} else {
-			errResp.ErrorCode = common.ErrInternal
-			return errResp
-		}
+		slog.Debug("KEY: invalid sender key SPKI", "err", parseErr)
+		errResp.ErrorCode = common.ErrCmdSyntax
+		return errResp
 	}
 
-	err := s.store.SetSenderKey(cmd.EntityID, senderKey)
+	// KEY uses recipientID as entityID - look up queue by recipientID
+	// then use the queue's senderID to set the sender key.
+	recipientID := cmd.EntityID
+	q, err := s.store.GetQueue(recipientID)
+	if err != nil {
+		slog.Debug("KEY: queue not found by recipientID",
+			"recipient_id_hex", hex.EncodeToString(recipientID[:]),
+			"err", err,
+		)
+		errResp.ErrorCode = common.ErrNoQueue
+		return errResp
+	}
+
+	slog.Debug("KEY: found queue",
+		"recipient_id_hex", hex.EncodeToString(q.RecipientID[:]),
+		"sender_id_hex", hex.EncodeToString(q.SenderID[:]),
+	)
+
+	err = s.store.SetSenderKey(q.SenderID, senderKey)
 	if err != nil {
 		if err == queue.ErrKeyAlreadySet {
 			errResp.ErrorCode = common.ErrAuth
