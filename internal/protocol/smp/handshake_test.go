@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -219,7 +220,11 @@ func TestServerHelloEmptySessionID(t *testing.T) {
 // --- ClientHello Encoding/Decoding Tests ---
 
 func TestClientHelloEncodeDecode(t *testing.T) {
-	fingerprint := "abc123_test-fingerprint"
+	// KeyHash is raw 32-byte SHA256 hash
+	fingerprint := make([]byte, 32)
+	for i := range fingerprint {
+		fingerprint[i] = byte(i)
+	}
 	original := &ClientHello{
 		Version: 7,
 		KeyHash: fingerprint,
@@ -234,8 +239,11 @@ func TestClientHelloEncodeDecode(t *testing.T) {
 	if decoded.Version != 7 {
 		t.Fatalf("Version: got %d, want 7", decoded.Version)
 	}
-	if decoded.KeyHash != fingerprint {
-		t.Fatalf("KeyHash: got %q, want %q", decoded.KeyHash, fingerprint)
+	if !bytes.Equal(decoded.KeyHash, fingerprint) {
+		t.Fatalf("KeyHash mismatch: got %x, want %x", decoded.KeyHash, fingerprint)
+	}
+	if len(decoded.KeyHash) != 32 {
+		t.Fatalf("KeyHash length: got %d, want 32", len(decoded.KeyHash))
 	}
 	if len(decoded.ClientKey) != 0 {
 		t.Fatalf("ClientKey should be empty, got %d bytes", len(decoded.ClientKey))
@@ -251,7 +259,7 @@ func TestClientHelloWithClientKey(t *testing.T) {
 
 	original := &ClientHello{
 		Version:   7,
-		KeyHash:   "test-fingerprint",
+		KeyHash:   make([]byte, 32), // raw SHA256 hash
 		ClientKey: clientSPKI,
 	}
 
@@ -268,29 +276,33 @@ func TestClientHelloWithClientKey(t *testing.T) {
 
 func TestClientHelloKeyHashVerification(t *testing.T) {
 	caCert, _ := generateTestCA(t)
-	hash := sha256.Sum256(caCert.Raw)
-	correctFP := base64.RawURLEncoding.EncodeToString(hash[:])
+	correctHash := ComputeCAFingerprintRaw(caCert)
 
-	// Correct fingerprint
-	ch := &ClientHello{Version: 7, KeyHash: correctFP}
+	// Correct hash: raw 32-byte SHA256
+	ch := &ClientHello{Version: 7, KeyHash: correctHash}
 	encoded := ch.Encode()
 	decoded, err := DecodeClientHello(encoded)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if decoded.KeyHash != correctFP {
+	if !bytes.Equal(decoded.KeyHash, correctHash) {
 		t.Fatalf("fingerprint mismatch after round-trip")
 	}
+	if len(decoded.KeyHash) != 32 {
+		t.Fatalf("KeyHash should be 32 bytes, got %d", len(decoded.KeyHash))
+	}
 
-	// Wrong fingerprint would be caught by ServerHandshake's verify step
-	wrongCH := &ClientHello{Version: 7, KeyHash: "wrong-fingerprint"}
+	// Wrong hash would be caught by ServerHandshake's verify step
+	wrongHash := make([]byte, 32)
+	wrongHash[0] = 0xFF
+	wrongCH := &ClientHello{Version: 7, KeyHash: wrongHash}
 	wrongEncoded := wrongCH.Encode()
 	wrongDecoded, err := DecodeClientHello(wrongEncoded)
 	if err != nil {
 		t.Fatalf("decode wrong: %v", err)
 	}
-	if wrongDecoded.KeyHash == correctFP {
-		t.Fatal("wrong fingerprint should not match correct one")
+	if subtle.ConstantTimeCompare(wrongDecoded.KeyHash, correctHash) == 1 {
+		t.Fatal("wrong hash should not match correct one")
 	}
 }
 
@@ -623,9 +635,11 @@ func TestHandshakeIdentityMismatch(t *testing.T) {
 		serverCh <- sResult{hr, err}
 	}()
 
-	// Client sends wrong fingerprint
+	// Client sends wrong fingerprint (a valid base64url-encoded wrong hash)
+	wrongHash := sha256.Sum256([]byte("wrong-cert-data"))
+	wrongFP := base64.RawURLEncoding.EncodeToString(wrongHash[:])
 	wrongParams := ClientHandshakeParams{
-		CAFingerprint: "wrong-fingerprint-value",
+		CAFingerprint: wrongFP,
 		SessionID:     nil,
 		VersionMin:    SMPVersionMin,
 		VersionMax:    SMPVersionMax,
@@ -759,5 +773,30 @@ func TestComputeCAFingerprint(t *testing.T) {
 
 	if fp != expected {
 		t.Fatalf("fingerprint: got %q, want %q", fp, expected)
+	}
+}
+
+func TestComputeCAFingerprintRaw(t *testing.T) {
+	caCert, _ := generateTestCA(t)
+
+	raw := ComputeCAFingerprintRaw(caCert)
+	if len(raw) != 32 {
+		t.Fatalf("raw fingerprint length: got %d, want 32", len(raw))
+	}
+
+	// Must equal SHA256 of cert.Raw
+	hash := sha256.Sum256(caCert.Raw)
+	if !bytes.Equal(raw, hash[:]) {
+		t.Fatal("raw fingerprint does not match SHA256 of cert.Raw")
+	}
+
+	// Must be consistent with base64 version
+	fp := ComputeCAFingerprint(caCert)
+	decoded, err := base64.RawURLEncoding.DecodeString(fp)
+	if err != nil {
+		t.Fatalf("decode base64 fingerprint: %v", err)
+	}
+	if !bytes.Equal(raw, decoded) {
+		t.Fatal("raw and base64 fingerprints are inconsistent")
 	}
 }

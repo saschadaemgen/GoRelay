@@ -226,18 +226,17 @@ func DecodeServerHello(data []byte) (*ServerHello, error) {
 // Wire format (inside a 16 KB padded block):
 //
 //	smpVersion = Word16 BE
-//	keyHash    = shortString (CA fingerprint, base64url no-pad)
+//	keyHash    = shortString (32 raw SHA256 bytes of CA cert DER)
 //	clientKey  = optional shortString (X25519 SPKI DER, for proxy connections)
 type ClientHello struct {
 	Version   uint16
-	KeyHash   string // CA certificate fingerprint
+	KeyHash   []byte // raw SHA256 hash of CA certificate DER (32 bytes)
 	ClientKey []byte // optional X25519 SPKI DER
 }
 
 // Encode serializes the ClientHello into bytes.
 func (ch *ClientHello) Encode() []byte {
-	khBytes := []byte(ch.KeyHash)
-	size := 2 + 1 + len(khBytes)
+	size := 2 + 1 + len(ch.KeyHash)
 	if len(ch.ClientKey) > 0 {
 		size += 1 + len(ch.ClientKey)
 	}
@@ -247,8 +246,8 @@ func (ch *ClientHello) Encode() []byte {
 	// 1. smpVersion
 	buf = appendUint16BE(buf, ch.Version)
 
-	// 2. keyHash = shortString
-	buf = appendShortString(buf, khBytes)
+	// 2. keyHash = shortString (raw SHA256 bytes)
+	buf = appendShortString(buf, ch.KeyHash)
 
 	// 3. clientKey = optional shortString
 	if len(ch.ClientKey) > 0 {
@@ -271,14 +270,12 @@ func DecodeClientHello(data []byte) (*ClientHello, error) {
 	ch.Version = binary.BigEndian.Uint16(data[off : off+2])
 	off += 2
 
-	// 2. keyHash = shortString
+	// 2. keyHash = shortString (raw SHA256 bytes)
 	var err error
-	var khBytes []byte
-	khBytes, off, err = readShortString(data, off)
+	ch.KeyHash, off, err = readShortString(data, off)
 	if err != nil {
 		return nil, fmt.Errorf("key hash: %w", err)
 	}
-	ch.KeyHash = string(khBytes)
 
 	// 3. clientKey = optional shortString (remaining bytes before padding)
 	if off < len(data) {
@@ -373,24 +370,26 @@ func ServerHandshake(conn net.Conn, params ServerHandshakeParams) (*HandshakeRes
 	slog.Debug("ServerHandshake: decoded ClientHello",
 		"client_version", clientHello.Version,
 		"key_hash_len", len(clientHello.KeyHash),
+		"key_hash_hex", hex.EncodeToString(clientHello.KeyHash),
 		"client_key_len", len(clientHello.ClientKey),
 	)
 
-	// Verify CA fingerprint
-	if clientHello.KeyHash != params.CAFingerprint {
+	// Verify CA fingerprint: decode our base64 fingerprint to raw bytes
+	// and compare with the raw SHA256 bytes the client sent.
+	ourRawHash, err := base64.RawURLEncoding.DecodeString(params.CAFingerprint)
+	if err != nil {
+		zeroECDHKey(privKey)
+		return nil, fmt.Errorf("decode own CA fingerprint: %w", err)
+	}
+
+	if subtle.ConstantTimeCompare(ourRawHash, clientHello.KeyHash) != 1 {
 		zeroECDHKey(privKey)
 
-		// Decode both values from base64 to raw bytes for hex comparison
-		ourRawHash, _ := base64.RawURLEncoding.DecodeString(params.CAFingerprint)
-		clientRawHash, _ := base64.RawURLEncoding.DecodeString(clientHello.KeyHash)
-
 		slog.Error("CA fingerprint mismatch",
-			"our_fingerprint_b64", params.CAFingerprint,
-			"our_fingerprint_hex", hex.EncodeToString(ourRawHash),
-			"our_fingerprint_len", len(ourRawHash),
-			"client_keyhash_b64", clientHello.KeyHash,
-			"client_keyhash_hex", hex.EncodeToString(clientRawHash),
-			"client_keyhash_len", len(clientRawHash),
+			"our_hex", hex.EncodeToString(ourRawHash),
+			"client_hex", hex.EncodeToString(clientHello.KeyHash),
+			"our_len", len(ourRawHash),
+			"client_len", len(clientHello.KeyHash),
 		)
 
 		return nil, ErrIdentityMismatch
@@ -494,8 +493,11 @@ func ClientHandshake(conn net.Conn, params ClientHandshakeParams) (*ClientHandsh
 		}
 	}
 
-	// Determine CA fingerprint to send
-	fingerprint := params.CAFingerprint
+	// Decode CA fingerprint from base64 to raw SHA256 bytes for the wire
+	fingerprintRaw, decErr := base64.RawURLEncoding.DecodeString(params.CAFingerprint)
+	if decErr != nil {
+		return nil, fmt.Errorf("decode CA fingerprint: %w", decErr)
+	}
 
 	// Choose version: highest mutual
 	version, err := negotiateClientVersion(
@@ -506,10 +508,10 @@ func ClientHandshake(conn net.Conn, params ClientHandshakeParams) (*ClientHandsh
 		return nil, err
 	}
 
-	// Build and send ClientHello
+	// Build and send ClientHello with raw SHA256 bytes
 	ch := &ClientHello{
 		Version: version,
-		KeyHash: fingerprint,
+		KeyHash: fingerprintRaw,
 	}
 
 	if err := common.WriteBlock(conn, ch.Encode()); err != nil {
@@ -551,9 +553,15 @@ func negotiateClientVersion(serverMin, serverMax, clientMin, clientMax uint16) (
 
 // --- Helpers ---
 
+// ComputeCAFingerprintRaw returns the raw 32-byte SHA256 hash of the full
+// DER-encoded certificate. This is what goes on the wire in ClientHello.
+func ComputeCAFingerprintRaw(cert *x509.Certificate) []byte {
+	hash := sha256.Sum256(cert.Raw)
+	return hash[:]
+}
+
 // ComputeCAFingerprint returns the SHA256 of the full DER-encoded certificate,
-// base64url-encoded without padding. Matches the Haskell reference:
-// getFingerprint caCert X.HashSHA256 hashes the complete DER bytes.
+// base64url-encoded without padding. Used for SMP URIs and logging.
 func ComputeCAFingerprint(cert *x509.Certificate) string {
 	hash := sha256.Sum256(cert.Raw)
 	fp := base64.RawURLEncoding.EncodeToString(hash[:])
