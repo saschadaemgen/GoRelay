@@ -1,79 +1,74 @@
 ---
 title: "Project Status"
-sidebar_position: 3
+sidebar_position: 4
 ---
 
 # GoRelay Project Status
 
-**Last updated:** 2026-03-09 (Session 001)
+**Last updated:** 2026-03-22 (Season 002)
 
-## Current Phase: Phase 0 - Research and Planning
+## Current Phase: Phase 2 - Extended Operations
 
-### Overall Progress
+### Phase Completion
 
-| Component | Status | Session |
-|-----------|--------|---------|
-| Research: SMP server analysis | Complete | 001 |
-| Research: Go server patterns | Complete | 001 |
-| Research: Noise Protocol evaluation | Complete | 001 |
-| Research: Post-quantum landscape | Complete | 001 |
-| Research: Cover traffic analysis | Complete | 001 |
-| Research: Dual-relay routing | Complete | 001 |
-| Research: Message retention + legal | Complete | 001 |
-| Research: Competitive analysis | Complete | 001 |
-| Repository and documentation structure | Complete | 001 |
-| GRP protocol specification | Not started | - |
-| Go module setup | Not started | - |
-| SMP transport layer (Phase 1) | Not started | - |
-| SMP handshake | Not started | - |
-| Queue store (BadgerDB) | Not started | - |
-| Subscription management | Not started | - |
-| GRP transport layer (Noise + PQC) | Not started | - |
-| Two-hop relay routing | Not started | - |
-| Cover traffic | Not started | - |
-| Docker deployment | Not started | - |
+**Phase 0: Research and Planning** - COMPLETE (Season 001)
+- 40 documentation files, zero placeholders
+- All architecture decisions documented
+- Technology stack selected and locked
 
-### Development Phases
+**Phase 1: SMP Skeleton** - COMPLETE (Season 002)
+- TLS CA chain with Ed25519 (persistent, rotatable)
+- SMP v7 handshake with tls-unique session binding
+- PING/PONG integration tests
+- NEW, KEY, SKEY, SUB, SEND, MSG, ACK, DEL commands
+- BadgerDB v4 persistent store with per-message AES-256-GCM
+- Cryptographic deletion on ACK
+- 48h default TTL, 7d hard max
+- Redelivery loop protection (MaxDeliveryAttempts=5)
+- Embedded admin dashboard (localhost:9090)
+- CLI test client (cmd/gorelay-test/)
+- Configurable ports (CLI flags + environment variables)
+- 47+ tests all passing
+- SimpleX Chat server test PASSED (March 22, 2026)
+- VPS deployment (Debian 12, Port 5224)
 
-**Phase 0: Research and Planning** - Complete
-- Comprehensive analysis of existing systems
-- Architecture decisions documented
-- Technology stack selected
-- Documentation structure established
+**Phase 2: Extended Operations** - NEXT
+- OFF command (suspend queue)
+- NKEY/NSUB (notification support)
+- GET command (single message retrieval)
+- NaCl crypto_box for MSG delivery (Layer 3)
+- Connection timeout handling
+- QueueStore cleanup on connection drop
 
-**Phase 1: SMP Skeleton** - Next
-- Go project setup with modules
-- TLS listener on port 5223 with ALPN "smp/1"
-- 16 KB block reader/writer
-- SMP handshake (version negotiation, key exchange)
-- PING/PONG keep-alive
-- Test: SimpleGo device connects and handshakes
+**Phase 3: Production Readiness** - PLANNED
+- Docker image and docker-compose.yml
+- systemd unit file
+- Prometheus metrics endpoint
+- Rate limiting (golang.org/x/time/rate)
+- Graceful shutdown with timeout
+- Debug logging removal
 
-**Phase 2: Queue Operations**
-- BadgerDB queue store
-- NEW, SUB, SEND, MSG, ACK, DEL commands
-- Subscription management with takeover semantics
-- Test: Full message flow through GoRelay
-
-**Phase 3: Persistence and Production**
-- Configuration (YAML via koanf)
-- Structured logging (slog)
-- Prometheus metrics
-- Docker image
-- Systemd service
-- Rate limiting
-
-**Phase 4: GRP Protocol**
+**Phase 4: GRP Protocol** - PLANNED
 - Noise Protocol transport (flynn/noise)
-- Post-quantum key exchange (ML-KEM-768)
+- ML-KEM-768 post-quantum key exchange
 - GRP command framing
-- Dual-port architecture
+- Dual-port with shared QueueStore
 
-**Phase 5: Advanced Security**
+**Phase 5: Advanced Security** - PLANNED
 - Two-hop relay routing
 - Cover traffic generation
 - Automatic queue rotation
-- Aggressive message retention enforcement
+
+---
+
+### Production Server
+
+- Host: 194.164.197.247 (Debian 12)
+- SMP Port: 5224 (official SMP server on 5223)
+- GRP Port: 7443
+- Admin: localhost:9090
+- SimpleX Test: PASSED
+- Binary: ~15 MB, 608 KB heap idle
 
 ---
 
