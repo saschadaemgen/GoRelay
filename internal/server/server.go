@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/nacl/box"
 
@@ -1226,9 +1227,18 @@ func prependSessionID(sessionID []byte, signedData []byte) []byte {
 
 // shutdown gracefully stops the server
 func (s *Server) shutdown() {
-	slog.Info("waiting for active connections to close")
-	s.clientWg.Wait()
-	slog.Info("all connections closed")
+	slog.Info("waiting for active connections to close", "timeout", "10s")
+	done := make(chan struct{})
+	go func() {
+		s.clientWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		slog.Info("all connections closed cleanly")
+	case <-time.After(10 * time.Second):
+		slog.Info("shutdown timeout, forcing exit")
+	}
 	if err := s.store.Close(); err != nil {
 		slog.Error("close store failed", "err", err)
 	}
