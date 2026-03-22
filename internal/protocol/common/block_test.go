@@ -198,7 +198,7 @@ func TestSerializeAndParseERR(t *testing.T) {
 	if cmds[0].Type != CmdERR {
 		t.Fatalf("expected ERR, got 0x%02x", cmds[0].Type)
 	}
-	if len(cmds[0].Body) < 1 || cmds[0].Body[0] != ErrAuth {
-		t.Fatalf("expected error code 0x%02x", ErrAuth)
+	if string(cmds[0].Body) != "AUTH" {
+		t.Fatalf("expected error text 'AUTH', got %q", string(cmds[0].Body))
 	}
 }

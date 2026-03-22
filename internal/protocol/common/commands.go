@@ -24,12 +24,13 @@ const (
 	CmdPING byte = 0x0D
 	CmdPONG byte = 0x0E
 	CmdEND  byte = 0x0F
-	CmdPFWD byte = 0x10
-	CmdRFWD byte = 0x11
-	CmdRRES byte = 0x12
-	CmdPRES byte = 0x13
-	CmdQROT byte = 0x14
-	CmdQACK byte = 0x15
+	CmdSKEY byte = 0x10
+	CmdPFWD byte = 0x16
+	CmdRFWD byte = 0x17
+	CmdRRES byte = 0x18
+	CmdPRES byte = 0x19
+	CmdQROT byte = 0x1A
+	CmdQACK byte = 0x1B
 )
 
 // Wire text tags for SMP commands (as sent/received on the wire)
@@ -38,6 +39,7 @@ var (
 	TagIDS  = []byte("IDS ")
 	TagSUB  = []byte("SUB")
 	TagKEY  = []byte("KEY ")
+	TagSKEY = []byte("SKEY ")
 	TagSEND = []byte("SEND ")
 	TagMSG  = []byte("MSG ")
 	TagACK  = []byte("ACK ")
@@ -50,7 +52,8 @@ var (
 	TagEND  = []byte("END")
 )
 
-// Error codes (sent as single byte after "ERR " tag)
+// Error codes - internal byte values for routing. The wire format uses text
+// strings (e.g., "ERR AUTH"), not binary bytes. See errorCodeToText().
 const (
 	ErrAuth      byte = 0x01
 	ErrNoQueue   byte = 0x02
@@ -64,7 +67,57 @@ const (
 	ErrDisabled  byte = 0x0A
 	ErrVersion   byte = 0x0B
 	ErrTimeout   byte = 0x0C
+	ErrSyntax    byte = 0x0D
+	ErrCmdSyntax byte = 0x0E
+	ErrProhibit  byte = 0x0F
+	ErrNoAuth    byte = 0x10
+	ErrHasAuth   byte = 0x11
+	ErrNoEntity  byte = 0x12
 )
+
+// errorCodeToText maps internal error codes to SMP wire text.
+func errorCodeToText(code byte) []byte {
+	switch code {
+	case ErrAuth:
+		return []byte("AUTH")
+	case ErrNoQueue:
+		return []byte("NO_QUEUE")
+	case ErrNoMsg:
+		return []byte("NO_MSG")
+	case ErrDuplicate:
+		return []byte("DUPLICATE")
+	case ErrQuota:
+		return []byte("QUOTA")
+	case ErrLarge:
+		return []byte("LARGE_MSG")
+	case ErrInternal:
+		return []byte("INTERNAL")
+	case ErrBlocked:
+		return []byte("BLOCKED")
+	case ErrNoKey:
+		return []byte("NO_KEY")
+	case ErrDisabled:
+		return []byte("DISABLED")
+	case ErrVersion:
+		return []byte("VERSION")
+	case ErrTimeout:
+		return []byte("TIMEOUT")
+	case ErrSyntax:
+		return []byte("SYNTAX")
+	case ErrCmdSyntax:
+		return []byte("CMD SYNTAX")
+	case ErrProhibit:
+		return []byte("CMD PROHIBITED")
+	case ErrNoAuth:
+		return []byte("CMD NO_AUTH")
+	case ErrHasAuth:
+		return []byte("CMD HAS_AUTH")
+	case ErrNoEntity:
+		return []byte("CMD NO_ENTITY")
+	default:
+		return []byte("INTERNAL")
+	}
+}
 
 // Flags
 const (
@@ -151,7 +204,7 @@ func (r Response) Serialize() []byte {
 		t = append(t, TagOK...)
 	case CmdERR:
 		t = append(t, TagERR...)
-		t = append(t, r.ErrorCode)
+		t = append(t, errorCodeToText(r.ErrorCode)...)
 	case CmdIDS:
 		t = append(t, TagIDS...)
 		t = append(t, r.Body...) // pre-encoded IDS body
@@ -322,6 +375,7 @@ func parseTextCommand(data []byte) (byte, []byte) {
 	}
 	tags := []tagEntry{
 		{TagSEND, CmdSEND},
+		{TagSKEY, CmdSKEY},
 		{TagPING, CmdPING},
 		{TagPONG, CmdPONG},
 		{TagNEW, CmdNEW},

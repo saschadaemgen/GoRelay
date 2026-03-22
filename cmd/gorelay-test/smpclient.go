@@ -396,6 +396,7 @@ func cmdName(b byte) string {
 		common.CmdIDS:  "IDS",
 		common.CmdSUB:  "SUB",
 		common.CmdKEY:  "KEY",
+		common.CmdSKEY: "SKEY",
 		common.CmdSEND: "SEND",
 		common.CmdMSG:  "MSG",
 		common.CmdACK:  "ACK",

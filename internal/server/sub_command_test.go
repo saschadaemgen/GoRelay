@@ -135,8 +135,8 @@ func TestSUBWithInvalidSignatureReturnsAuth(t *testing.T) {
 	if cmd.Type != common.CmdERR {
 		t.Fatalf("expected ERR, got 0x%02x", cmd.Type)
 	}
-	if len(cmd.Body) < 1 || cmd.Body[0] != common.ErrAuth {
-		t.Fatalf("expected AUTH error, got body: %v", cmd.Body)
+	if string(cmd.Body) != "AUTH" {
+		t.Fatalf("expected AUTH error, got body: %q", string(cmd.Body))
 	}
 }
 
@@ -171,8 +171,8 @@ func TestSUBWithUnsignedReturnsAuth(t *testing.T) {
 	if cmd.Type != common.CmdERR {
 		t.Fatalf("expected ERR, got 0x%02x", cmd.Type)
 	}
-	if len(cmd.Body) < 1 || cmd.Body[0] != common.ErrAuth {
-		t.Fatalf("expected AUTH error, got body: %v", cmd.Body)
+	if string(cmd.Body) != "AUTH" {
+		t.Fatalf("expected AUTH error, got body: %q", string(cmd.Body))
 	}
 }
 
@@ -210,8 +210,8 @@ func TestSUBOnNonexistentQueueReturnsError(t *testing.T) {
 	if cmd.Type != common.CmdERR {
 		t.Fatalf("expected ERR, got 0x%02x", cmd.Type)
 	}
-	if len(cmd.Body) < 1 || cmd.Body[0] != common.ErrNoQueue {
-		t.Fatalf("expected NO_QUEUE error, got body: %v", cmd.Body)
+	if string(cmd.Body) != "NO_QUEUE" {
+		t.Fatalf("expected NO_QUEUE error, got body: %q", string(cmd.Body))
 	}
 }
 

@@ -354,8 +354,8 @@ func TestIntegrationSENDBeforeKEY(t *testing.T) {
 	if cmd.Type != common.CmdERR {
 		t.Fatalf("SEND before KEY: expected ERR, got 0x%02x", cmd.Type)
 	}
-	if len(cmd.Body) < 1 || cmd.Body[0] != common.ErrNoKey {
-		t.Fatalf("expected NO_KEY error, got body: %v", cmd.Body)
+	if string(cmd.Body) != "NO_KEY" {
+		t.Fatalf("expected NO_KEY error, got body: %q", string(cmd.Body))
 	}
 }
 
@@ -387,8 +387,8 @@ func TestIntegrationSUBNonexistentQueue(t *testing.T) {
 	if cmd.Type != common.CmdERR {
 		t.Fatalf("SUB nonexistent: expected ERR, got 0x%02x", cmd.Type)
 	}
-	if len(cmd.Body) < 1 || cmd.Body[0] != common.ErrNoQueue {
-		t.Fatalf("expected NO_QUEUE error, got body: %v", cmd.Body)
+	if string(cmd.Body) != "NO_QUEUE" {
+		t.Fatalf("expected NO_QUEUE error, got body: %q", string(cmd.Body))
 	}
 }
 
@@ -434,8 +434,8 @@ func TestIntegrationKEYTwice(t *testing.T) {
 	if cmd2.Type != common.CmdERR {
 		t.Fatalf("second KEY: expected ERR, got 0x%02x", cmd2.Type)
 	}
-	if len(cmd2.Body) < 1 || cmd2.Body[0] != common.ErrAuth {
-		t.Fatalf("expected AUTH error, got body: %v", cmd2.Body)
+	if string(cmd2.Body) != "AUTH" {
+		t.Fatalf("expected AUTH error, got body: %q", string(cmd2.Body))
 	}
 }
 
@@ -472,8 +472,8 @@ func TestIntegrationSUBInvalidSignature(t *testing.T) {
 	if cmd.Type != common.CmdERR {
 		t.Fatalf("SUB invalid sig: expected ERR, got 0x%02x", cmd.Type)
 	}
-	if len(cmd.Body) < 1 || cmd.Body[0] != common.ErrAuth {
-		t.Fatalf("expected AUTH error, got body: %v", cmd.Body)
+	if string(cmd.Body) != "AUTH" {
+		t.Fatalf("expected AUTH error, got body: %q", string(cmd.Body))
 	}
 }
 

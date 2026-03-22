@@ -160,8 +160,8 @@ func TestKEYTwiceReturnsAuthError(t *testing.T) {
 	if cmd2.Type != common.CmdERR {
 		t.Fatalf("KEY 2: expected ERR, got 0x%02x", cmd2.Type)
 	}
-	if len(cmd2.Body) < 1 || cmd2.Body[0] != common.ErrAuth {
-		t.Fatalf("KEY 2: expected AUTH error")
+	if string(cmd2.Body) != "AUTH" {
+		t.Fatalf("KEY 2: expected AUTH error, got body: %q", string(cmd2.Body))
 	}
 }
 
@@ -193,8 +193,8 @@ func TestSENDWithoutKEYReturnsNoKeyError(t *testing.T) {
 	if cmd.Type != common.CmdERR {
 		t.Fatalf("SEND: expected ERR, got 0x%02x", cmd.Type)
 	}
-	if len(cmd.Body) < 1 || cmd.Body[0] != common.ErrNoKey {
-		t.Fatalf("SEND: expected NO_KEY error, got %v", cmd.Body)
+	if string(cmd.Body) != "NO_KEY" {
+		t.Fatalf("SEND: expected NO_KEY error, got body: %q", string(cmd.Body))
 	}
 }
 

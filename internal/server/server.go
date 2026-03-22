@@ -409,7 +409,12 @@ func (s *Server) processor(ctx context.Context, c *Client) {
 			slog.Debug("processor: context cancelled")
 			return
 		case cmd := <-c.rcvQ:
-			slog.Debug("processor: handling command", "type", fmt.Sprintf("0x%02x", cmd.Type))
+			slog.Info("received command",
+				"type", fmt.Sprintf("0x%02x", cmd.Type),
+				"has_entity_id", cmd.HasEntityID,
+				"entity_id_hex", hex.EncodeToString(cmd.EntityID[:]),
+				"has_sig", len(cmd.Signature) > 0,
+			)
 			resp := s.dispatch(c, cmd)
 			slog.Debug("processor: response ready", "type", fmt.Sprintf("0x%02x", resp.Type), "deliveries", len(resp.Deliveries))
 			deliveries := resp.Deliveries
@@ -471,6 +476,8 @@ func (s *Server) dispatch(c *Client, cmd common.Command) common.Response {
 		return s.handleSUB(c, cmd)
 	case common.CmdKEY:
 		return s.handleKEY(c, cmd)
+	case common.CmdSKEY:
+		return s.handleSKEY(c, cmd)
 	case common.CmdSEND:
 		return s.handleSEND(c, cmd)
 	case common.CmdACK:
@@ -812,6 +819,61 @@ func (s *Server) handleKEY(c *Client, cmd common.Command) common.Response {
 			return errResp
 		}
 		slog.Error("set sender key failed", "err", err)
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+
+	return common.Response{
+		Type:          common.CmdOK,
+		CorrelationID: cmd.CorrelationID,
+	}
+}
+
+// handleSKEY secures a queue by setting the sender's authentication key.
+// SKEY uses the senderID as entityID (unlike KEY which uses recipientID).
+// Format: "SKEY " + senderAuthPublicKey(shortString with SPKI)
+func (s *Server) handleSKEY(c *Client, cmd common.Command) common.Response {
+	errResp := common.Response{
+		Type:          common.CmdERR,
+		CorrelationID: cmd.CorrelationID,
+	}
+
+	if !cmd.HasEntityID {
+		errResp.ErrorCode = common.ErrNoQueue
+		return errResp
+	}
+
+	// Body: shortString(SPKI DER Ed25519 sender key)
+	if len(cmd.Body) < 1 {
+		errResp.ErrorCode = common.ErrCmdSyntax
+		return errResp
+	}
+	keyLen := int(cmd.Body[0])
+	if 1+keyLen > len(cmd.Body) {
+		errResp.ErrorCode = common.ErrCmdSyntax
+		return errResp
+	}
+	keySPKI := cmd.Body[1 : 1+keyLen]
+
+	senderKey, parseErr := smp.ParseEd25519SPKI(keySPKI)
+	if parseErr != nil {
+		slog.Debug("SKEY: invalid sender key SPKI", "err", parseErr)
+		errResp.ErrorCode = common.ErrCmdSyntax
+		return errResp
+	}
+
+	// Look up queue by senderID
+	err := s.store.SetSenderKey(cmd.EntityID, senderKey)
+	if err != nil {
+		if err == queue.ErrKeyAlreadySet {
+			errResp.ErrorCode = common.ErrAuth
+			return errResp
+		}
+		if err == queue.ErrNoQueue {
+			errResp.ErrorCode = common.ErrNoQueue
+			return errResp
+		}
+		slog.Error("SKEY set sender key failed", "err", err)
 		errResp.ErrorCode = common.ErrInternal
 		return errResp
 	}
