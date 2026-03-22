@@ -4,8 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"testing"
-
-	"golang.org/x/crypto/nacl/secretbox"
 )
 
 func TestEncryptMsgBodyOutputLength(t *testing.T) {
@@ -44,11 +42,10 @@ func TestEncryptMsgBodyDecryptRoundtrip(t *testing.T) {
 
 	encrypted := EncryptMsgBody(key, msgId, timestamp, flags, sentBody)
 
-	// Decrypt with secretbox.Open
-	nonce := msgId
-	decrypted, ok := secretbox.Open(nil, encrypted, &nonce, &key)
+	// Decrypt with SimplexCryptoBoxOpen
+	decrypted, ok := SimplexCryptoBoxOpen(key, msgId, encrypted)
 	if !ok {
-		t.Fatal("secretbox.Open failed")
+		t.Fatal("SimplexCryptoBoxOpen failed")
 	}
 
 	if len(decrypted) != paddedSize {
@@ -144,15 +141,53 @@ func TestEncryptMsgBodyEmptyBody(t *testing.T) {
 	}
 
 	// Decrypt and verify
-	nonce := msgId
-	decrypted, ok := secretbox.Open(nil, out, &nonce, &key)
+	decrypted, ok := SimplexCryptoBoxOpen(key, msgId, out)
 	if !ok {
-		t.Fatal("secretbox.Open failed for empty body")
+		t.Fatal("SimplexCryptoBoxOpen failed for empty body")
 	}
 
 	rcvMsgBodyLen := binary.BigEndian.Uint16(decrypted[0:2])
 	// timestamp(8) + flags(1) + SP(1) + empty = 10
 	if rcvMsgBodyLen != 10 {
 		t.Fatalf("rcvMsgBody length for empty body: got %d, want 10", rcvMsgBodyLen)
+	}
+}
+
+func TestSimplexCryptoBoxOpenWrongKey(t *testing.T) {
+	var key1, key2 [32]byte
+	var nonce [24]byte
+	if _, err := rand.Read(key1[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rand.Read(key2[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rand.Read(nonce[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	encrypted := simplexCryptoBox(key1, nonce, []byte("secret"))
+	_, ok := SimplexCryptoBoxOpen(key2, nonce, encrypted)
+	if ok {
+		t.Fatal("decryption should fail with wrong key")
+	}
+}
+
+func TestSimplexCryptoBoxOpenTampered(t *testing.T) {
+	var key [32]byte
+	var nonce [24]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rand.Read(nonce[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	encrypted := simplexCryptoBox(key, nonce, []byte("secret"))
+	// Tamper with ciphertext
+	encrypted[20] ^= 0xFF
+	_, ok := SimplexCryptoBoxOpen(key, nonce, encrypted)
+	if ok {
+		t.Fatal("decryption should fail with tampered ciphertext")
 	}
 }

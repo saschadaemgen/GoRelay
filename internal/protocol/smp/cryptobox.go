@@ -3,7 +3,9 @@ package smp
 import (
 	"encoding/binary"
 
-	"golang.org/x/crypto/nacl/secretbox"
+	"golang.org/x/crypto/poly1305"
+	"golang.org/x/crypto/salsa20"
+	"golang.org/x/crypto/salsa20/salsa"
 )
 
 // MaxMessageLength is the maximum message body length for MSG delivery.
@@ -17,12 +19,13 @@ const paddedSize = 2 + MaxMessageLength
 //
 // Wire format per SMP spec:
 //
-//	encryptedRcvMsgBody = NaCl_secretbox(padded(rcvMsgBody))
+//	encryptedRcvMsgBody = simplexCryptoBox(padded(rcvMsgBody))
 //	rcvMsgBody = timestamp(8 bytes BE) + msgFlags(1 byte) + SP(0x20) + sentMsgBody
 //	padded(data, maxLen) = originalLength(2 bytes BE) + data + zero-fill to maxLen
 //	maxLen = MaxMessageLength + 2 = 16066
 //
 // The nonce is the 24-byte msgId. The key is the precomputed DH shared secret.
+// Uses SimpleX custom XSalsa20 nonce splitting (cryptonite library convention).
 //
 // Returns: authTag(16) + ciphertext(16066) = 16082 bytes total.
 func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, flags byte, sentBody []byte) []byte {
@@ -41,9 +44,114 @@ func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, flag
 	copy(padded[2:], rcvMsgBody)
 	// Remaining bytes are already zero from make()
 
-	// Encrypt with NaCl secretbox: nonce = msgId, key = dhSharedKey
-	nonce := msgId // [24]byte is directly usable as nonce
-	out := secretbox.Seal(nil, padded, &nonce, &dhSharedKey)
+	// Encrypt with SimpleX custom XSalsa20 variant
+	out := simplexCryptoBox(dhSharedKey, msgId, padded)
 
 	return out
+}
+
+// simplexCryptoBox encrypts plaintext using the SimpleX custom XSalsa20 variant.
+//
+// SimpleX (via Haskell cryptonite) uses a different nonce splitting than standard NaCl:
+//
+//	Standard NaCl: HSalsa20(key, nonce[0:16]),  then Salsa20(subkey, nonce[16:24])
+//	SimpleX:       HSalsa20(key, nonce[8:24]),  then Salsa20(subkey, nonce[0:8])
+//
+// Output: poly1305Tag(16) + ciphertext(len(plaintext))
+func simplexCryptoBox(key [32]byte, nonce [24]byte, plaintext []byte) []byte {
+	// Step 1: HSalsa20(key, nonce[8:24]) -> subkey
+	var subkey [32]byte
+	var hsInput [16]byte
+	copy(hsInput[:], nonce[8:24])
+	salsa.HSalsa20(&subkey, &hsInput, &key, &salsa.Sigma)
+
+	// Step 2: Salsa20 XOR with subkey and nonce[0:8]
+	// Prepend 32 zero bytes for Poly1305 key extraction
+	buf := make([]byte, 32+len(plaintext))
+	copy(buf[32:], plaintext)
+
+	var salsaNonce [8]byte
+	copy(salsaNonce[:], nonce[0:8])
+	salsa20.XORKeyStream(buf, buf, salsaNonce[:], &subkey)
+
+	// First 32 bytes XORed with zeros = raw keystream = Poly1305 one-time key
+	var polyKey [32]byte
+	copy(polyKey[:], buf[:32])
+	ciphertext := buf[32:]
+
+	// Poly1305 MAC over ciphertext
+	var tag [16]byte
+	poly1305.Sum(&tag, ciphertext, &polyKey)
+
+	// Zero sensitive material
+	for i := range subkey {
+		subkey[i] = 0
+	}
+	for i := range polyKey {
+		polyKey[i] = 0
+	}
+
+	// Output: tag(16) + ciphertext
+	result := make([]byte, 16+len(ciphertext))
+	copy(result[:16], tag[:])
+	copy(result[16:], ciphertext)
+
+	return result
+}
+
+// SimplexCryptoBoxOpen decrypts ciphertext produced by simplexCryptoBox.
+// Returns the plaintext and true on success, or nil and false if authentication fails.
+func SimplexCryptoBoxOpen(key [32]byte, nonce [24]byte, box []byte) ([]byte, bool) {
+	if len(box) < 16 {
+		return nil, false
+	}
+
+	// Split tag and ciphertext
+	var tag [16]byte
+	copy(tag[:], box[:16])
+	ciphertext := box[16:]
+
+	// Step 1: HSalsa20(key, nonce[8:24]) -> subkey
+	var subkey [32]byte
+	var hsInput [16]byte
+	copy(hsInput[:], nonce[8:24])
+	salsa.HSalsa20(&subkey, &hsInput, &key, &salsa.Sigma)
+
+	// Step 2: Generate Poly1305 key by encrypting 32 zero bytes
+	var salsaNonce [8]byte
+	copy(salsaNonce[:], nonce[0:8])
+
+	polyKeyBuf := make([]byte, 32)
+	salsa20.XORKeyStream(polyKeyBuf, polyKeyBuf, salsaNonce[:], &subkey)
+	var polyKey [32]byte
+	copy(polyKey[:], polyKeyBuf)
+
+	// Verify Poly1305 tag
+	if !poly1305.Verify(&tag, ciphertext, &polyKey) {
+		for i := range subkey {
+			subkey[i] = 0
+		}
+		for i := range polyKey {
+			polyKey[i] = 0
+		}
+		return nil, false
+	}
+
+	// Decrypt: XOR ciphertext with keystream at counter offset 1 (after 32-byte poly key block)
+	// We need to XOR with the keystream starting at byte 32, so prepend 32 dummy bytes
+	buf := make([]byte, 32+len(ciphertext))
+	copy(buf[32:], ciphertext)
+	salsa20.XORKeyStream(buf, buf, salsaNonce[:], &subkey)
+	plaintext := make([]byte, len(ciphertext))
+	copy(plaintext, buf[32:])
+
+	// Zero sensitive material
+	for i := range subkey {
+		subkey[i] = 0
+	}
+	for i := range polyKey {
+		polyKey[i] = 0
+	}
+
+	return plaintext, true
 }

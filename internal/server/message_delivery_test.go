@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/nacl/secretbox"
-
 	"github.com/saschadaemgen/GoRelay/internal/protocol/common"
 	"github.com/saschadaemgen/GoRelay/internal/protocol/smp"
 )
@@ -111,11 +109,10 @@ func parseMSGResponseEncrypted(t *testing.T, block [common.BlockSize]byte, dhSha
 	copy(msgID[:], mBody[1:1+24])
 	encrypted := mBody[1+mIDLen:]
 
-	// Decrypt with NaCl secretbox
-	nonce := msgID
-	decrypted, ok := secretbox.Open(nil, encrypted, &nonce, &dhSharedKey)
+	// Decrypt with SimpleX custom XSalsa20 variant
+	decrypted, ok := smp.SimplexCryptoBoxOpen(dhSharedKey, msgID, encrypted)
 	if !ok {
-		t.Fatalf("secretbox.Open failed on MSG body (encrypted len=%d)", len(encrypted))
+		t.Fatalf("SimplexCryptoBoxOpen failed on MSG body (encrypted len=%d)", len(encrypted))
 	}
 
 	// Decrypted is padded: uint16BE(rcvMsgBodyLen) + rcvMsgBody + zero padding
