@@ -416,7 +416,18 @@ func (s *Server) processor(ctx context.Context, c *Client) {
 				"has_sig", len(cmd.Signature) > 0,
 			)
 			resp := s.dispatch(c, cmd)
-			slog.Debug("processor: response ready", "type", fmt.Sprintf("0x%02x", resp.Type), "deliveries", len(resp.Deliveries))
+
+			// Echo entityId from request into OK/ERR responses per SMP spec.
+			// IDS and PONG keep entityId empty; MSG/END set it explicitly.
+			if cmd.HasEntityID && !resp.HasEntityID {
+				switch resp.Type {
+				case common.CmdOK, common.CmdERR:
+					resp.HasEntityID = true
+					resp.EntityID = cmd.EntityID
+				}
+			}
+
+			slog.Debug("processor: response ready", "type", fmt.Sprintf("0x%02x", resp.Type), "has_entity_id", resp.HasEntityID, "deliveries", len(resp.Deliveries))
 			deliveries := resp.Deliveries
 			resp.Deliveries = nil
 			select {
