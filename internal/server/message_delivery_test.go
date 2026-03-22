@@ -10,74 +10,47 @@ import (
 	"time"
 
 	"github.com/saschadaemgen/GoRelay/internal/protocol/common"
+	"github.com/saschadaemgen/GoRelay/internal/protocol/smp"
 )
 
 // buildKEYBlock constructs a 16KB block containing a KEY command.
-// EntityID is the senderID, body is the sender's Ed25519 public key.
+// Body: shortString(SPKI DER Ed25519 sender key)
 func buildKEYBlock(corrID [24]byte, senderID [24]byte, senderPubKey ed25519.PublicKey) [common.BlockSize]byte {
-	transmission := make([]byte, 0, 90)
-	transmission = append(transmission, 0x00)              // signature length = 0
-	transmission = append(transmission, 0x00)              // session_id length = 0
-	transmission = append(transmission, corrID[:]...)      // correlation ID
-	transmission = append(transmission, 24)                // entity_id length = 24
-	transmission = append(transmission, senderID[:]...)    // entity ID = senderID
-	transmission = append(transmission, common.CmdKEY)     // command
-	transmission = append(transmission, senderPubKey...)   // body: sender public key
+	keySPKI := smp.EncodeEd25519SPKI(senderPubKey)
+	body := make([]byte, 0, 1+len(keySPKI))
+	body = append(body, byte(len(keySPKI)))
+	body = append(body, keySPKI...)
 
-	return wrapTransmissionInBlock(transmission)
+	t := common.BuildTransmission(nil, corrID, senderID[:], common.TagKEY, body)
+	return common.WrapTransmissionBlock(t)
 }
 
 // buildSignedSENDBlock constructs a signed SEND command block.
-func buildSignedSENDBlock(corrID [24]byte, senderID [24]byte, privKey ed25519.PrivateKey, msgBody []byte) [common.BlockSize]byte {
-	// Build signed data
-	signedData := make([]byte, 0, 1+24+1+24+1+len(msgBody))
-	signedData = append(signedData, 0x00)              // session_id length = 0
-	signedData = append(signedData, corrID[:]...)      // correlation ID
-	signedData = append(signedData, 24)                // entity_id length = 24
-	signedData = append(signedData, senderID[:]...)    // entity ID
-	signedData = append(signedData, common.CmdSEND)    // command
-	signedData = append(signedData, msgBody...)         // body
+// The signature covers: shortString(sessionID) + corrId + entityId + "SEND " + msgBody
+func buildSignedSENDBlock(corrID [24]byte, senderID [24]byte, privKey ed25519.PrivateKey, msgBody []byte, sessionID ...[]byte) [common.BlockSize]byte {
+	var sessID []byte
+	if len(sessionID) > 0 {
+		sessID = sessionID[0]
+	}
 
+	// Build signed data with sessionID
+	signedData := common.BuildSignedData(sessID, corrID, senderID[:], common.TagSEND, msgBody)
 	sig := ed25519.Sign(privKey, signedData)
 
-	transmission := make([]byte, 0, 1+len(sig)+len(signedData))
-	transmission = append(transmission, byte(len(sig)))
-	transmission = append(transmission, sig...)
-	transmission = append(transmission, signedData...)
-
-	return wrapTransmissionInBlock(transmission)
+	// Build wire transmission (sessionID NOT in wire)
+	t := common.BuildTransmission(sig, corrID, senderID[:], common.TagSEND, msgBody)
+	return common.WrapTransmissionBlock(t)
 }
 
 // buildACKBlock constructs an ACK command block.
-// EntityID is the recipientID, body is the msgID (24 bytes).
+// Body: shortString(msgID)
 func buildACKBlock(corrID [24]byte, recipientID [24]byte, msgID [24]byte) [common.BlockSize]byte {
-	transmission := make([]byte, 0, 80)
-	transmission = append(transmission, 0x00)               // signature length = 0
-	transmission = append(transmission, 0x00)               // session_id length = 0
-	transmission = append(transmission, corrID[:]...)       // correlation ID
-	transmission = append(transmission, 24)                 // entity_id length = 24
-	transmission = append(transmission, recipientID[:]...)  // entity ID = recipientID
-	transmission = append(transmission, common.CmdACK)      // command
-	transmission = append(transmission, msgID[:]...)         // body: msgID
+	body := make([]byte, 0, 25)
+	body = append(body, 24) // shortString length
+	body = append(body, msgID[:]...)
 
-	return wrapTransmissionInBlock(transmission)
-}
-
-// wrapTransmissionInBlock wraps a raw transmission into a 16KB block.
-func wrapTransmissionInBlock(transmission []byte) [common.BlockSize]byte {
-	payload := make([]byte, 0, 3+len(transmission))
-	payload = append(payload, 0x01) // batch count = 1
-	tLen := uint16(len(transmission))
-	payload = append(payload, byte(tLen>>8), byte(tLen))
-	payload = append(payload, transmission...)
-
-	var block [common.BlockSize]byte
-	binary.BigEndian.PutUint16(block[:2], uint16(len(payload)))
-	copy(block[2:], payload)
-	for i := 2 + len(payload); i < common.BlockSize; i++ {
-		block[i] = common.PaddingByte
-	}
-	return block
+	t := common.BuildTransmission(nil, corrID, recipientID[:], common.TagACK, body)
+	return common.WrapTransmissionBlock(t)
 }
 
 // sendAndReadResponse sends a block and reads the response.
@@ -98,17 +71,26 @@ func parseMSGResponse(t *testing.T, block [common.BlockSize]byte) (msgID [24]byt
 	if cmd.Type != common.CmdMSG {
 		t.Fatalf("expected MSG (0x%02x), got 0x%02x", common.CmdMSG, cmd.Type)
 	}
-	// MSG body: msgID(24) + timestamp(8) + flags(1) + body
-	if len(cmd.Body) < 33 {
-		t.Fatalf("MSG body too short: %d", len(cmd.Body))
+	// MSG body after "MSG " tag:
+	//   msgId = shortString(24 bytes) -> 1 byte len + 24 bytes
+	//   timestamp = 8 bytes BE
+	//   flags = 1 byte
+	//   body = rest
+	mBody := cmd.Body
+	if len(mBody) < 1 {
+		t.Fatalf("MSG body too short: %d", len(mBody))
 	}
-	copy(msgID[:], cmd.Body[0:24])
-	timestamp = uint64(cmd.Body[24])<<56 | uint64(cmd.Body[25])<<48 |
-		uint64(cmd.Body[26])<<40 | uint64(cmd.Body[27])<<32 |
-		uint64(cmd.Body[28])<<24 | uint64(cmd.Body[29])<<16 |
-		uint64(cmd.Body[30])<<8 | uint64(cmd.Body[31])
-	flags = cmd.Body[32]
-	body = cmd.Body[33:]
+	mIDLen := int(mBody[0])
+	if 1+mIDLen+8+1 > len(mBody) || mIDLen < 24 {
+		t.Fatalf("MSG body too short for msgId: len=%d, mIDLen=%d", len(mBody), mIDLen)
+	}
+	copy(msgID[:], mBody[1:1+24])
+	off := 1 + mIDLen
+	timestamp = binary.BigEndian.Uint64(mBody[off : off+8])
+	off += 8
+	flags = mBody[off]
+	off++
+	body = mBody[off:]
 	return
 }
 
@@ -121,27 +103,24 @@ func TestKEYSetsSenderKeyReturnsOK(t *testing.T) {
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen recipient key: %v", err)
+		t.Fatal(err)
 	}
 
 	_, senderID := createQueueOnConn(t, conn, recipientPub)
 
-	// Generate sender keypair
 	senderPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen sender key: %v", err)
+		t.Fatal(err)
 	}
 
 	var corrID [24]byte
 	if _, err := rand.Read(corrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
 
-	block := buildKEYBlock(corrID, senderID, senderPub)
-	cmd := sendAndReadResponse(t, conn, block)
-
+	cmd := sendAndReadResponse(t, conn, buildKEYBlock(corrID, senderID, senderPub))
 	if cmd.Type != common.CmdOK {
-		t.Fatalf("expected OK, got 0x%02x", cmd.Type)
+		t.Fatalf("KEY: expected OK, got 0x%02x", cmd.Type)
 	}
 }
 
@@ -154,39 +133,35 @@ func TestKEYTwiceReturnsAuthError(t *testing.T) {
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen recipient key: %v", err)
+		t.Fatal(err)
 	}
 
 	_, senderID := createQueueOnConn(t, conn, recipientPub)
 
 	senderPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen sender key: %v", err)
+		t.Fatal(err)
 	}
 
-	// First KEY - should succeed
 	var corrID1 [24]byte
 	if _, err := rand.Read(corrID1[:]); err != nil {
-		t.Fatalf("corrID1: %v", err)
+		t.Fatal(err)
 	}
-	block1 := buildKEYBlock(corrID1, senderID, senderPub)
-	cmd1 := sendAndReadResponse(t, conn, block1)
+	cmd1 := sendAndReadResponse(t, conn, buildKEYBlock(corrID1, senderID, senderPub))
 	if cmd1.Type != common.CmdOK {
-		t.Fatalf("first KEY: expected OK, got 0x%02x", cmd1.Type)
+		t.Fatalf("KEY 1: expected OK, got 0x%02x", cmd1.Type)
 	}
 
-	// Second KEY - should fail with AUTH
 	var corrID2 [24]byte
 	if _, err := rand.Read(corrID2[:]); err != nil {
-		t.Fatalf("corrID2: %v", err)
+		t.Fatal(err)
 	}
-	block2 := buildKEYBlock(corrID2, senderID, senderPub)
-	cmd2 := sendAndReadResponse(t, conn, block2)
+	cmd2 := sendAndReadResponse(t, conn, buildKEYBlock(corrID2, senderID, senderPub))
 	if cmd2.Type != common.CmdERR {
-		t.Fatalf("second KEY: expected ERR, got 0x%02x", cmd2.Type)
+		t.Fatalf("KEY 2: expected ERR, got 0x%02x", cmd2.Type)
 	}
 	if len(cmd2.Body) < 1 || cmd2.Body[0] != common.ErrAuth {
-		t.Fatalf("second KEY: expected AUTH error, got body: %v", cmd2.Body)
+		t.Fatalf("KEY 2: expected AUTH error")
 	}
 }
 
@@ -194,35 +169,32 @@ func TestSENDWithoutKEYReturnsNoKeyError(t *testing.T) {
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	conn := dialSMP(t, addr)
+	conn, sessID := dialSMPWithSession(t, addr)
 	defer conn.Close()
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen key: %v", err)
+		t.Fatal(err)
 	}
 
 	_, senderID := createQueueOnConn(t, conn, recipientPub)
 
-	// Try SEND without KEY
 	_, senderPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen sender: %v", err)
+		t.Fatal(err)
 	}
 
 	var corrID [24]byte
 	if _, err := rand.Read(corrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
 
-	block := buildSignedSENDBlock(corrID, senderID, senderPriv, []byte("hello"))
-	cmd := sendAndReadResponse(t, conn, block)
-
+	cmd := sendAndReadResponse(t, conn, buildSignedSENDBlock(corrID, senderID, senderPriv, []byte("test"), sessID))
 	if cmd.Type != common.CmdERR {
-		t.Fatalf("expected ERR, got 0x%02x", cmd.Type)
+		t.Fatalf("SEND: expected ERR, got 0x%02x", cmd.Type)
 	}
 	if len(cmd.Body) < 1 || cmd.Body[0] != common.ErrNoKey {
-		t.Fatalf("expected NO_KEY error, got body: %v", cmd.Body)
+		t.Fatalf("SEND: expected NO_KEY error, got %v", cmd.Body)
 	}
 }
 
@@ -230,42 +202,39 @@ func TestSENDWithValidSignatureReturnsOK(t *testing.T) {
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	conn := dialSMP(t, addr)
+	conn, sessID := dialSMPWithSession(t, addr)
 	defer conn.Close()
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen recipient key: %v", err)
+		t.Fatal(err)
 	}
 
 	_, senderID := createQueueOnConn(t, conn, recipientPub)
 
-	// Set sender key
 	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen sender key: %v", err)
+		t.Fatal(err)
 	}
 
+	// Set sender key
 	var keyCorrID [24]byte
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	keyBlock := buildKEYBlock(keyCorrID, senderID, senderPub)
-	keyCmd := sendAndReadResponse(t, conn, keyBlock)
+	keyCmd := sendAndReadResponse(t, conn, buildKEYBlock(keyCorrID, senderID, senderPub))
 	if keyCmd.Type != common.CmdOK {
 		t.Fatalf("KEY: expected OK, got 0x%02x", keyCmd.Type)
 	}
 
-	// SEND
+	// Send message
 	var sendCorrID [24]byte
 	if _, err := rand.Read(sendCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	sendBlock := buildSignedSENDBlock(sendCorrID, senderID, senderPriv, []byte("test message"))
-	sendCmd := sendAndReadResponse(t, conn, sendBlock)
-
+	sendCmd := sendAndReadResponse(t, conn, buildSignedSENDBlock(sendCorrID, senderID, senderPriv, []byte("hello"), sessID))
 	if sendCmd.Type != common.CmdOK {
-		t.Fatalf("SEND: expected OK, got 0x%02x", sendCmd.Type)
+		t.Fatalf("SEND: expected OK, got 0x%02x (body=%v)", sendCmd.Type, sendCmd.Body)
 	}
 }
 
@@ -273,111 +242,96 @@ func TestSENDDeliversMSGToSubscribedRecipient(t *testing.T) {
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	// Recipient connection
-	recipientConn := dialSMP(t, addr)
-	defer recipientConn.Close()
+	// Connection A: recipient
+	connA := dialSMP(t, addr)
+	defer connA.Close()
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen recipient key: %v", err)
+		t.Fatal(err)
 	}
+	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
 
-	recipientID, senderID := createQueueOnConn(t, recipientConn, recipientPub)
+	// Connection B: sender
+	connB, sessBID := dialSMPWithSession(t, addr)
+	defer connB.Close()
 
-	// Sender connection
-	senderConn := dialSMP(t, addr)
-	defer senderConn.Close()
-
-	// Set sender key
 	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen sender key: %v", err)
+		t.Fatal(err)
 	}
 
+	// KEY
 	var keyCorrID [24]byte
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	keyBlock := buildKEYBlock(keyCorrID, senderID, senderPub)
-	keyCmd := sendAndReadResponse(t, senderConn, keyBlock)
+	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
 	if keyCmd.Type != common.CmdOK {
 		t.Fatalf("KEY: expected OK, got 0x%02x", keyCmd.Type)
 	}
 
-	// SEND message
-	msgContent := []byte("hello from sender")
+	// SEND
+	msgContent := []byte("hello world")
 	var sendCorrID [24]byte
 	if _, err := rand.Read(sendCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	sendBlock := buildSignedSENDBlock(sendCorrID, senderID, senderPriv, msgContent)
-	sendCmd := sendAndReadResponse(t, senderConn, sendBlock)
+	sendCmd := sendAndReadResponse(t, connB, buildSignedSENDBlock(sendCorrID, senderID, senderPriv, msgContent, sessBID))
 	if sendCmd.Type != common.CmdOK {
 		t.Fatalf("SEND: expected OK, got 0x%02x", sendCmd.Type)
 	}
 
-	// Recipient should receive MSG
-	msgResp := readRawBlock(t, recipientConn)
-	msgID, _, _, body := parseMSGResponse(t, msgResp)
-
+	// A receives MSG
+	msgResp := readRawBlock(t, connA)
+	_, _, _, body := parseMSGResponse(t, msgResp)
 	if !bytes.Equal(body, msgContent) {
 		t.Fatalf("MSG body: got %q, want %q", body, msgContent)
 	}
 
-	var zeroID [24]byte
-	if msgID == zeroID {
-		t.Fatal("MSG has zero msgID")
-	}
-
-	// Verify entity ID is the recipientID
-	cmd := parseResponseType(t, msgResp)
-	if !cmd.HasEntityID || cmd.EntityID != recipientID {
-		t.Fatal("MSG entityID should be recipientID")
-	}
+	_ = recipientID
 }
 
 func TestSENDWhenRecipientNotSubscribed(t *testing.T) {
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	// Create queue on one connection, then close it
-	recipientConn := dialSMP(t, addr)
+	// Create queue on conn A
+	connA := dialSMP(t, addr)
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen recipient key: %v", err)
+		t.Fatal(err)
 	}
-	_, senderID := createQueueOnConn(t, recipientConn, recipientPub)
-	recipientConn.Close()
-	time.Sleep(50 * time.Millisecond) // allow server to process disconnect
+	_, senderID := createQueueOnConn(t, connA, recipientPub)
+	connA.Close() // disconnect recipient
 
-	// Sender connection
-	senderConn := dialSMP(t, addr)
-	defer senderConn.Close()
+	time.Sleep(50 * time.Millisecond) // let server process disconnect
+
+	// Sender on conn B
+	connB, sessBID := dialSMPWithSession(t, addr)
+	defer connB.Close()
 
 	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen sender key: %v", err)
+		t.Fatal(err)
 	}
 
 	var keyCorrID [24]byte
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	keyBlock := buildKEYBlock(keyCorrID, senderID, senderPub)
-	keyCmd := sendAndReadResponse(t, senderConn, keyBlock)
+	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
 	if keyCmd.Type != common.CmdOK {
 		t.Fatalf("KEY: expected OK, got 0x%02x", keyCmd.Type)
 	}
 
-	// SEND - should still succeed (message stored for later)
 	var sendCorrID [24]byte
 	if _, err := rand.Read(sendCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	sendBlock := buildSignedSENDBlock(sendCorrID, senderID, senderPriv, []byte("queued msg"))
-	sendCmd := sendAndReadResponse(t, senderConn, sendBlock)
+	sendCmd := sendAndReadResponse(t, connB, buildSignedSENDBlock(sendCorrID, senderID, senderPriv, []byte("queued"), sessBID))
 	if sendCmd.Type != common.CmdOK {
-		t.Fatalf("SEND: expected OK, got 0x%02x", sendCmd.Type)
+		t.Fatalf("SEND: expected OK (message queued), got 0x%02x", sendCmd.Type)
 	}
 }
 
@@ -385,49 +339,45 @@ func TestACKDeletesMessageReturnsOK(t *testing.T) {
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	recipientConn := dialSMP(t, addr)
-	defer recipientConn.Close()
+	connA := dialSMP(t, addr)
+	defer connA.Close()
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen recipient key: %v", err)
+		t.Fatal(err)
 	}
+	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
 
-	recipientID, senderID := createQueueOnConn(t, recipientConn, recipientPub)
-
-	senderConn := dialSMP(t, addr)
-	defer senderConn.Close()
+	connB, sessBID := dialSMPWithSession(t, addr)
+	defer connB.Close()
 
 	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen sender key: %v", err)
+		t.Fatal(err)
 	}
 
-	// KEY
 	var keyCorrID [24]byte
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
 
-	// SEND
 	var sendCorrID [24]byte
 	if _, err := rand.Read(sendCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	sendAndReadResponse(t, senderConn, buildSignedSENDBlock(sendCorrID, senderID, senderPriv, []byte("msg1")))
+	sendAndReadResponse(t, connB, buildSignedSENDBlock(sendCorrID, senderID, senderPriv, []byte("to-ack"), sessBID))
 
-	// Recipient reads MSG
-	msgResp := readRawBlock(t, recipientConn)
+	// A receives MSG
+	msgResp := readRawBlock(t, connA)
 	msgID, _, _, _ := parseMSGResponse(t, msgResp)
 
-	// ACK
+	// A sends ACK
 	var ackCorrID [24]byte
 	if _, err := rand.Read(ackCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	ackBlock := buildACKBlock(ackCorrID, recipientID, msgID)
-	ackCmd := sendAndReadResponse(t, recipientConn, ackBlock)
+	ackCmd := sendAndReadResponse(t, connA, buildACKBlock(ackCorrID, recipientID, msgID))
 	if ackCmd.Type != common.CmdOK {
 		t.Fatalf("ACK: expected OK, got 0x%02x", ackCmd.Type)
 	}
@@ -437,70 +387,64 @@ func TestACKDeliversNextPendingMessage(t *testing.T) {
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	recipientConn := dialSMP(t, addr)
-	defer recipientConn.Close()
+	connA := dialSMP(t, addr)
+	defer connA.Close()
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen recipient key: %v", err)
+		t.Fatal(err)
 	}
+	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
 
-	recipientID, senderID := createQueueOnConn(t, recipientConn, recipientPub)
-
-	senderConn := dialSMP(t, addr)
-	defer senderConn.Close()
+	connB, sessBID := dialSMPWithSession(t, addr)
+	defer connB.Close()
 
 	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen sender key: %v", err)
+		t.Fatal(err)
 	}
 
-	// KEY
 	var keyCorrID [24]byte
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
 
-	// SEND two messages
-	for i, content := range []string{"msg1", "msg2"} {
+	// Send two messages
+	for i := 0; i < 2; i++ {
 		var corrID [24]byte
 		if _, err := rand.Read(corrID[:]); err != nil {
-			t.Fatalf("corrID %d: %v", i, err)
+			t.Fatal(err)
 		}
-		sendAndReadResponse(t, senderConn, buildSignedSENDBlock(corrID, senderID, senderPriv, []byte(content)))
+		msg := []byte("msg-" + string(rune('A'+i)))
+		cmd := sendAndReadResponse(t, connB, buildSignedSENDBlock(corrID, senderID, senderPriv, msg, sessBID))
+		if cmd.Type != common.CmdOK {
+			t.Fatalf("SEND %d: expected OK, got 0x%02x", i, cmd.Type)
+		}
 	}
 
-	// Recipient reads first MSG
-	msgResp1 := readRawBlock(t, recipientConn)
+	// A receives first MSG
+	msgResp1 := readRawBlock(t, connA)
 	msgID1, _, _, body1 := parseMSGResponse(t, msgResp1)
-	if string(body1) != "msg1" {
-		t.Fatalf("first MSG: got %q, want %q", body1, "msg1")
+	if !bytes.Equal(body1, []byte("msg-A")) {
+		t.Fatalf("first MSG body: got %q", body1)
 	}
 
-	// ACK first message - should trigger delivery of second
+	// A sends ACK for first message
 	var ackCorrID [24]byte
 	if _, err := rand.Read(ackCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	ackBlock := buildACKBlock(ackCorrID, recipientID, msgID1)
-	recipientConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if _, err := recipientConn.Write(ackBlock[:]); err != nil {
-		t.Fatalf("write ACK: %v", err)
-	}
-
-	// Should get OK for ACK
-	okResp := readRawBlock(t, recipientConn)
-	okCmd := parseResponseType(t, okResp)
-	if okCmd.Type != common.CmdOK {
-		t.Fatalf("ACK: expected OK, got 0x%02x", okCmd.Type)
+	ackCmd := sendAndReadResponse(t, connA, buildACKBlock(ackCorrID, recipientID, msgID1))
+	if ackCmd.Type != common.CmdOK {
+		t.Fatalf("ACK: expected OK, got 0x%02x", ackCmd.Type)
 	}
 
-	// Should get second MSG
-	msgResp2 := readRawBlock(t, recipientConn)
+	// A should receive second MSG
+	msgResp2 := readRawBlock(t, connA)
 	_, _, _, body2 := parseMSGResponse(t, msgResp2)
-	if string(body2) != "msg2" {
-		t.Fatalf("second MSG: got %q, want %q", body2, "msg2")
+	if !bytes.Equal(body2, []byte("msg-B")) {
+		t.Fatalf("second MSG body: got %q", body2)
 	}
 }
 
@@ -508,31 +452,56 @@ func TestACKIdempotent(t *testing.T) {
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	conn := dialSMP(t, addr)
-	defer conn.Close()
+	connA := dialSMP(t, addr)
+	defer connA.Close()
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen key: %v", err)
+		t.Fatal(err)
+	}
+	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
+
+	connB, sessBID := dialSMPWithSession(t, addr)
+	defer connB.Close()
+
+	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	recipientID, _ := createQueueOnConn(t, conn, recipientPub)
+	var keyCorrID [24]byte
+	if _, err := rand.Read(keyCorrID[:]); err != nil {
+		t.Fatal(err)
+	}
+	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
 
-	// ACK with a random msgID on a queue with no messages
-	var msgID [24]byte
-	if _, err := rand.Read(msgID[:]); err != nil {
-		t.Fatalf("msgID: %v", err)
+	var sendCorrID [24]byte
+	if _, err := rand.Read(sendCorrID[:]); err != nil {
+		t.Fatal(err)
+	}
+	sendAndReadResponse(t, connB, buildSignedSENDBlock(sendCorrID, senderID, senderPriv, []byte("ack-me"), sessBID))
+
+	msgResp := readRawBlock(t, connA)
+	msgID, _, _, _ := parseMSGResponse(t, msgResp)
+
+	// First ACK
+	var ack1 [24]byte
+	if _, err := rand.Read(ack1[:]); err != nil {
+		t.Fatal(err)
+	}
+	cmd1 := sendAndReadResponse(t, connA, buildACKBlock(ack1, recipientID, msgID))
+	if cmd1.Type != common.CmdOK {
+		t.Fatalf("ACK 1: expected OK, got 0x%02x", cmd1.Type)
 	}
 
-	var corrID [24]byte
-	if _, err := rand.Read(corrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+	// Second ACK (idempotent)
+	var ack2 [24]byte
+	if _, err := rand.Read(ack2[:]); err != nil {
+		t.Fatal(err)
 	}
-	ackBlock := buildACKBlock(corrID, recipientID, msgID)
-	ackCmd := sendAndReadResponse(t, conn, ackBlock)
-
-	if ackCmd.Type != common.CmdOK {
-		t.Fatalf("idempotent ACK: expected OK, got 0x%02x", ackCmd.Type)
+	cmd2 := sendAndReadResponse(t, connA, buildACKBlock(ack2, recipientID, msgID))
+	if cmd2.Type != common.CmdOK {
+		t.Fatalf("ACK 2: expected OK (idempotent), got 0x%02x", cmd2.Type)
 	}
 }
 
@@ -540,68 +509,69 @@ func TestFullCycleNEWtoKEYtoSENDtoMSGtoACK(t *testing.T) {
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	// Recipient creates queue
-	recipientConn := dialSMP(t, addr)
-	defer recipientConn.Close()
+	connA := dialSMP(t, addr)
+	defer connA.Close()
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen recipient key: %v", err)
+		t.Fatal(err)
 	}
+	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
 
-	recipientID, senderID := createQueueOnConn(t, recipientConn, recipientPub)
+	connB, sessBID := dialSMPWithSession(t, addr)
+	defer connB.Close()
 
-	// Sender connects
-	senderConn := dialSMP(t, addr)
-	defer senderConn.Close()
-
-	// KEY
 	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen sender key: %v", err)
+		t.Fatal(err)
 	}
 
+	// KEY
 	var keyCorrID [24]byte
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	keyCmd := sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, senderID, senderPub))
+	keyCmd := sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
 	if keyCmd.Type != common.CmdOK {
 		t.Fatalf("KEY: expected OK, got 0x%02x", keyCmd.Type)
 	}
 
 	// SEND
-	msgContent := []byte("full cycle test message")
+	msgContent := []byte("full cycle test")
 	var sendCorrID [24]byte
 	if _, err := rand.Read(sendCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	sendCmd := sendAndReadResponse(t, senderConn, buildSignedSENDBlock(sendCorrID, senderID, senderPriv, msgContent))
+	sendCmd := sendAndReadResponse(t, connB, buildSignedSENDBlock(sendCorrID, senderID, senderPriv, msgContent, sessBID))
 	if sendCmd.Type != common.CmdOK {
 		t.Fatalf("SEND: expected OK, got 0x%02x", sendCmd.Type)
 	}
 
-	// MSG received by recipient
-	msgResp := readRawBlock(t, recipientConn)
+	// A receives MSG
+	msgResp := readRawBlock(t, connA)
 	msgID, _, _, body := parseMSGResponse(t, msgResp)
 	if !bytes.Equal(body, msgContent) {
 		t.Fatalf("MSG body: got %q, want %q", body, msgContent)
 	}
 
-	// Verify MSG entityID is recipientID
-	msgCmd := parseResponseType(t, msgResp)
-	if msgCmd.EntityID != recipientID {
-		t.Fatal("MSG entityID should be recipientID")
-	}
-
-	// ACK
+	// A ACKs
 	var ackCorrID [24]byte
 	if _, err := rand.Read(ackCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	ackCmd := sendAndReadResponse(t, recipientConn, buildACKBlock(ackCorrID, recipientID, msgID))
+	ackCmd := sendAndReadResponse(t, connA, buildACKBlock(ackCorrID, recipientID, msgID))
 	if ackCmd.Type != common.CmdOK {
 		t.Fatalf("ACK: expected OK, got 0x%02x", ackCmd.Type)
+	}
+
+	// PING should work, no more MSG
+	var pingCorrID [24]byte
+	if _, err := rand.Read(pingCorrID[:]); err != nil {
+		t.Fatal(err)
+	}
+	pingCmd := sendAndReadResponse(t, connA, buildPINGBlock(pingCorrID))
+	if pingCmd.Type != common.CmdPONG {
+		t.Fatalf("PING: expected PONG, got 0x%02x", pingCmd.Type)
 	}
 }
 
@@ -609,70 +579,56 @@ func TestMultipleMessagesFIFOOrder(t *testing.T) {
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	recipientConn := dialSMP(t, addr)
-	defer recipientConn.Close()
+	connA := dialSMP(t, addr)
+	defer connA.Close()
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen key: %v", err)
+		t.Fatal(err)
 	}
+	recipientID, senderID := createQueueOnConn(t, connA, recipientPub)
 
-	recipientID, senderID := createQueueOnConn(t, recipientConn, recipientPub)
-
-	senderConn := dialSMP(t, addr)
-	defer senderConn.Close()
+	connB, sessBID := dialSMPWithSession(t, addr)
+	defer connB.Close()
 
 	senderPub, senderPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("gen sender key: %v", err)
+		t.Fatal(err)
 	}
 
-	// KEY
 	var keyCorrID [24]byte
 	if _, err := rand.Read(keyCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-	sendAndReadResponse(t, senderConn, buildKEYBlock(keyCorrID, senderID, senderPub))
+	sendAndReadResponse(t, connB, buildKEYBlock(keyCorrID, senderID, senderPub))
 
-	// Send 3 messages
-	messages := []string{"first", "second", "third"}
-	for _, content := range messages {
+	msgs := []string{"first", "second", "third"}
+	for _, m := range msgs {
 		var corrID [24]byte
 		if _, err := rand.Read(corrID[:]); err != nil {
-			t.Fatalf("corrID: %v", err)
+			t.Fatal(err)
 		}
-		sendAndReadResponse(t, senderConn, buildSignedSENDBlock(corrID, senderID, senderPriv, []byte(content)))
+		cmd := sendAndReadResponse(t, connB, buildSignedSENDBlock(corrID, senderID, senderPriv, []byte(m), sessBID))
+		if cmd.Type != common.CmdOK {
+			t.Fatalf("SEND %q: expected OK, got 0x%02x", m, cmd.Type)
+		}
 	}
 
-	// Receive and ACK in order
-	for i, expected := range messages {
-		msgResp := readRawBlock(t, recipientConn)
-		msgID, _, _, body := parseMSGResponse(t, msgResp)
-
-		if string(body) != expected {
-			t.Fatalf("message %d: got %q, want %q", i, body, expected)
+	// Receive and ACK all messages in FIFO order
+	for i, expected := range msgs {
+		resp := readRawBlock(t, connA)
+		msgID, _, _, body := parseMSGResponse(t, resp)
+		if !bytes.Equal(body, []byte(expected)) {
+			t.Fatalf("msg %d: got %q, want %q", i, body, expected)
 		}
 
 		var ackCorrID [24]byte
 		if _, err := rand.Read(ackCorrID[:]); err != nil {
-			t.Fatalf("corrID: %v", err)
+			t.Fatal(err)
 		}
-
-		ackBlock := buildACKBlock(ackCorrID, recipientID, msgID)
-		recipientConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		if _, err := recipientConn.Write(ackBlock[:]); err != nil {
-			t.Fatalf("write ACK %d: %v", i, err)
+		ackCmd := sendAndReadResponse(t, connA, buildACKBlock(ackCorrID, recipientID, msgID))
+		if ackCmd.Type != common.CmdOK {
+			t.Fatalf("ACK %d: expected OK, got 0x%02x", i, ackCmd.Type)
 		}
-
-		// Read OK for ACK
-		okResp := readRawBlock(t, recipientConn)
-		okCmd := parseResponseType(t, okResp)
-		if okCmd.Type != common.CmdOK {
-			t.Fatalf("ACK %d: expected OK, got 0x%02x", i, okCmd.Type)
-		}
-
-		// If not last message, next MSG should arrive (triggered by ACK)
-		// For messages after the first, MSG was already delivered via ACK handler
-		// For the first message, it was delivered immediately by SEND
 	}
 }

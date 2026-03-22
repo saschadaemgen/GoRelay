@@ -69,7 +69,15 @@ func startTestServer(t *testing.T) (addr string, cancel context.CancelFunc) {
 
 // dialSMP connects via TLS with ALPN smp/1, performs the SMP handshake,
 // and returns the raw TLS connection for block I/O.
+// The sessionID is discarded; use dialSMPWithSession if you need it.
 func dialSMP(t *testing.T, addr string) net.Conn {
+	conn, _ := dialSMPWithSession(t, addr)
+	return conn
+}
+
+// dialSMPWithSession connects via TLS, performs the SMP handshake,
+// and returns the connection plus the TLS channel binding (tls-unique).
+func dialSMPWithSession(t *testing.T, addr string) (net.Conn, []byte) {
 	t.Helper()
 
 	conn, err := tls.DialWithDialer(
@@ -88,13 +96,11 @@ func dialSMP(t *testing.T, addr string) net.Conn {
 	}
 
 	// Derive CA fingerprint from the TLS peer certificate chain.
-	// PeerCertificates[0] is the online cert, PeerCertificates[1] is the CA.
 	state := conn.ConnectionState()
 	caFingerprint := ""
 	if len(state.PeerCertificates) >= 2 {
 		caFingerprint = smp.ComputeCAFingerprint(state.PeerCertificates[1])
 	} else if len(state.PeerCertificates) >= 1 {
-		// fallback: single cert acts as CA
 		caFingerprint = smp.ComputeCAFingerprint(state.PeerCertificates[0])
 	}
 
@@ -111,35 +117,14 @@ func dialSMP(t *testing.T, addr string) net.Conn {
 		t.Fatalf("client handshake: %v", err)
 	}
 
-	return conn
+	return conn, state.TLSUnique
 }
 
-// buildPINGBlock constructs a full 16384-byte block containing one PING
-// command with the given correlation ID.
+// buildPINGBlock constructs a 16384-byte block with one PING command.
+// Wire format: authorization(0x00) + corrId(0x18+24) + entityId(0x00) + "PING"
 func buildPINGBlock(corrID [24]byte) [common.BlockSize]byte {
-	// Build transmission: sig(0) + sessID(0) + corrID(24) + entityID(0) + PING
-	transmission := make([]byte, 0, 28)
-	transmission = append(transmission, 0x00)       // signature length = 0
-	transmission = append(transmission, 0x00)       // session_id length = 0
-	transmission = append(transmission, corrID[:]...) // correlation ID
-	transmission = append(transmission, 0x00)       // entity_id length = 0
-	transmission = append(transmission, common.CmdPING)
-
-	// Build payload: batchCount(1) + tLen(2) + transmission
-	payload := make([]byte, 0, 3+len(transmission))
-	payload = append(payload, 0x01) // batch count = 1
-	tLen := uint16(len(transmission))
-	payload = append(payload, byte(tLen>>8), byte(tLen))
-	payload = append(payload, transmission...)
-
-	// Build block
-	var block [common.BlockSize]byte
-	binary.BigEndian.PutUint16(block[:2], uint16(len(payload)))
-	copy(block[2:], payload)
-	for i := 2 + len(payload); i < common.BlockSize; i++ {
-		block[i] = common.PaddingByte
-	}
-	return block
+	t := common.BuildTransmission(nil, corrID, nil, common.TagPING, nil)
+	return common.WrapTransmissionBlock(t)
 }
 
 // readRawBlock reads exactly 16384 bytes from the connection using io.ReadFull.
@@ -161,7 +146,6 @@ func TestPingPongSingleRoundTrip(t *testing.T) {
 	conn := dialSMP(t, addr)
 	defer conn.Close()
 
-	// Build and send PING
 	var corrID [24]byte
 	if _, err := rand.Read(corrID[:]); err != nil {
 		t.Fatalf("generate corrID: %v", err)
@@ -177,24 +161,20 @@ func TestPingPongSingleRoundTrip(t *testing.T) {
 		t.Fatalf("wrote %d bytes, want %d", n, common.BlockSize)
 	}
 
-	// Read raw PONG response
 	resp := readRawBlock(t, conn)
 
-	// Verify block is exactly 16384 bytes (guaranteed by readRawBlock)
-	// Verify payload length
 	payloadLen := binary.BigEndian.Uint16(resp[:2])
 	if payloadLen == 0 || int(payloadLen) > common.MaxPayloadSize {
 		t.Fatalf("invalid payload length: %d", payloadLen)
 	}
 
-	// Verify padding is all '#'
+	// Verify zero padding
 	for i := 2 + int(payloadLen); i < common.BlockSize; i++ {
-		if resp[i] != common.PaddingByte {
-			t.Fatalf("padding byte at offset %d: got 0x%02x, want 0x%02x", i, resp[i], common.PaddingByte)
+		if resp[i] != 0x00 {
+			t.Fatalf("padding byte at offset %d: got 0x%02x, want 0x00", i, resp[i])
 		}
 	}
 
-	// Parse the payload to verify PONG
 	payload := resp[2 : 2+payloadLen]
 	cmds, err := common.ParsePayload(payload)
 	if err != nil {
@@ -227,16 +207,13 @@ func TestPingPongMultipleSequential(t *testing.T) {
 			t.Fatalf("iteration %d: generate corrID: %v", i, err)
 		}
 
-		// Send PING
 		block := buildPINGBlock(corrID)
 		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if _, err := conn.Write(block[:]); err != nil {
 			t.Fatalf("iteration %d: write PING: %v", i, err)
 		}
 
-		// Read PONG
 		resp := readRawBlock(t, conn)
-
 		payloadLen := binary.BigEndian.Uint16(resp[:2])
 		payload := resp[2 : 2+payloadLen]
 
@@ -271,7 +248,6 @@ func TestPingPongBlockSize(t *testing.T) {
 		t.Fatalf("generate corrID: %v", err)
 	}
 
-	// Verify sent block is exactly 16384
 	block := buildPINGBlock(corrID)
 	if len(block) != common.BlockSize {
 		t.Fatalf("PING block size: got %d, want %d", len(block), common.BlockSize)
@@ -282,7 +258,6 @@ func TestPingPongBlockSize(t *testing.T) {
 		t.Fatalf("write PING: %v", err)
 	}
 
-	// Read response - readRawBlock reads exactly BlockSize bytes via io.ReadFull
 	resp := readRawBlock(t, conn)
 	if len(resp) != common.BlockSize {
 		t.Fatalf("PONG block size: got %d, want %d", len(resp), common.BlockSize)
@@ -303,11 +278,11 @@ func TestPingPongPaddingCharacter(t *testing.T) {
 
 	block := buildPINGBlock(corrID)
 
-	// Verify PING block padding
+	// Verify PING block zero padding
 	pingPayloadLen := binary.BigEndian.Uint16(block[:2])
 	for i := 2 + int(pingPayloadLen); i < common.BlockSize; i++ {
-		if block[i] != '#' {
-			t.Fatalf("PING padding at %d: got 0x%02x, want '#'", i, block[i])
+		if block[i] != 0x00 {
+			t.Fatalf("PING padding at %d: got 0x%02x, want 0x00", i, block[i])
 		}
 	}
 
@@ -316,12 +291,12 @@ func TestPingPongPaddingCharacter(t *testing.T) {
 		t.Fatalf("write PING: %v", err)
 	}
 
-	// Verify PONG block padding
+	// Verify PONG block zero padding
 	resp := readRawBlock(t, conn)
 	pongPayloadLen := binary.BigEndian.Uint16(resp[:2])
 	for i := 2 + int(pongPayloadLen); i < common.BlockSize; i++ {
-		if resp[i] != '#' {
-			t.Fatalf("PONG padding at %d: got 0x%02x, want '#'", i, resp[i])
+		if resp[i] != 0x00 {
+			t.Fatalf("PONG padding at %d: got 0x%02x, want 0x00", i, resp[i])
 		}
 	}
 }
@@ -348,12 +323,10 @@ func TestTLSUniqueNonEmpty(t *testing.T) {
 
 	state := conn.ConnectionState()
 
-	// TLSUnique must be non-empty with TLS 1.2
 	if len(state.TLSUnique) == 0 {
 		t.Fatal("TLSUnique is empty - session binding will not work")
 	}
 
-	// Verify TLS 1.2 is negotiated
 	if state.Version != tls.VersionTLS12 {
 		t.Fatalf("expected TLS 1.2 (0x%04x), got 0x%04x", tls.VersionTLS12, state.Version)
 	}
@@ -386,14 +359,11 @@ func TestSessionBindingMatchesInHandshake(t *testing.T) {
 		t.Fatal("client TLSUnique is empty")
 	}
 
-	// Derive CA fingerprint
 	caFingerprint := ""
 	if len(state.PeerCertificates) >= 2 {
 		caFingerprint = smp.ComputeCAFingerprint(state.PeerCertificates[1])
 	}
 
-	// The client handshake will verify session ID internally.
-	// If session binding mismatches, ClientHandshake returns ErrSessionMismatch.
 	params := smp.ClientHandshakeParams{
 		CAFingerprint: caFingerprint,
 		SessionID:     clientTLSUnique,
@@ -405,7 +375,6 @@ func TestSessionBindingMatchesInHandshake(t *testing.T) {
 		t.Fatalf("handshake with session binding failed: %v", err)
 	}
 
-	// Verify the result contains a valid session ID
 	if len(result.SessionID) == 0 {
 		t.Fatal("handshake result has empty session ID")
 	}

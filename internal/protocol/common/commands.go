@@ -1,7 +1,14 @@
 package common
 
-// Command codes
+import (
+	"bytes"
+	"encoding/binary"
+)
+
+// SMP text command tags (wire format uses ASCII strings, not byte codes)
 const (
+	// Legacy byte codes retained for internal routing between goroutines.
+	// These are NOT sent on the wire - the wire uses text tags.
 	CmdNEW  byte = 0x01
 	CmdIDS  byte = 0x02
 	CmdSUB  byte = 0x03
@@ -25,7 +32,25 @@ const (
 	CmdQACK byte = 0x15
 )
 
-// Error codes
+// Wire text tags for SMP commands (as sent/received on the wire)
+var (
+	TagNEW  = []byte("NEW ")
+	TagIDS  = []byte("IDS ")
+	TagSUB  = []byte("SUB")
+	TagKEY  = []byte("KEY ")
+	TagSEND = []byte("SEND ")
+	TagMSG  = []byte("MSG ")
+	TagACK  = []byte("ACK ")
+	TagOFF  = []byte("OFF")
+	TagDEL  = []byte("DEL")
+	TagOK   = []byte("OK")
+	TagERR  = []byte("ERR ")
+	TagPING = []byte("PING")
+	TagPONG = []byte("PONG")
+	TagEND  = []byte("END")
+)
+
+// Error codes (sent as single byte after "ERR " tag)
 const (
 	ErrAuth      byte = 0x01
 	ErrNoQueue   byte = 0x02
@@ -48,32 +73,34 @@ const (
 	FlagPriority     byte = 0x04
 )
 
+// CorrIDSize is the size of a correlation ID (24 bytes)
+const CorrIDSize = 24
+
 // Command represents a parsed client command
 type Command struct {
 	Type          byte
-	CorrelationID [24]byte
-	EntityID      [24]byte
+	CorrelationID [CorrIDSize]byte
+	EntityID      [CorrIDSize]byte
 	HasEntityID   bool
 	Signature     []byte
-	SignedData    []byte // bytes covered by the signature (session_id through command+body)
-	Body          []byte
+	SignedData    []byte // bytes covered by the signature
+	Body          []byte // command-specific body (after the command tag)
 }
 
 // Response represents a server response
 type Response struct {
 	Type          byte
-	CorrelationID [24]byte
-	EntityID      [24]byte
+	CorrelationID [CorrIDSize]byte
+	EntityID      [CorrIDSize]byte
 	HasEntityID   bool
-	MessageID     [24]byte
+	MessageID     [CorrIDSize]byte
 	Timestamp     uint64
 	Flags         byte
 	ErrorCode     byte
 	Body          []byte
 
 	// Deliveries are additional responses to send to specific clients
-	// after this response has been queued. Used by SEND and ACK to
-	// deliver MSG after the OK response.
+	// after this response has been queued.
 	Deliveries []Delivery
 }
 
@@ -83,71 +110,89 @@ type Delivery struct {
 	Resp   Response
 }
 
-// Serialize encodes a response into bytes for block framing
+// Serialize encodes a response into the SMP transmission wire format.
+//
+// Wire format:
+//
+//	content = transmissionCount(0x01) + transmissionLength(Word16 BE) + transmission
+//	transmission = authorization(0x00) + corrId + entityId + command
+//	corrId = 0x18 + 24 bytes (or 0x00 for server notifications)
+//	entityId = shortString(1 byte len + data)
+//	command = text tag + body
 func (r Response) Serialize() []byte {
-	// Simplified serialization for the skeleton
-	// TODO: implement full transmission encoding per spec
-	buf := make([]byte, 0, 128)
-
-	// Batch count = 1
-	buf = append(buf, 0x01)
-
 	// Build transmission
-	transmission := make([]byte, 0, 64)
+	t := make([]byte, 0, 128)
 
-	// Signature length = 0 (unsigned for now)
-	transmission = append(transmission, 0x00)
+	// authorization = 0x00 (server responses are unsigned)
+	t = append(t, 0x00)
 
-	// Session ID length = 0
-	transmission = append(transmission, 0x00)
-
-	// Correlation ID (24 bytes)
-	transmission = append(transmission, r.CorrelationID[:]...)
-
-	// Entity ID
-	if r.HasEntityID {
-		transmission = append(transmission, 24) // length
-		transmission = append(transmission, r.EntityID[:]...)
+	// corrId: 0x18 + 24 bytes for responses, 0x00 for notifications (MSG, END)
+	isNotification := r.Type == CmdMSG || r.Type == CmdEND
+	if isNotification {
+		t = append(t, 0x00) // empty corrId
 	} else {
-		transmission = append(transmission, 0x00) // length = 0
+		t = append(t, CorrIDSize) // length prefix = 24
+		t = append(t, r.CorrelationID[:]...)
 	}
 
-	// Command byte
-	transmission = append(transmission, r.Type)
+	// entityId = shortString
+	if r.HasEntityID {
+		t = append(t, CorrIDSize) // length = 24
+		t = append(t, r.EntityID[:]...)
+	} else {
+		t = append(t, 0x00) // length = 0
+	}
 
-	// Command-specific data
+	// Command tag + body
 	switch r.Type {
+	case CmdPONG:
+		t = append(t, TagPONG...)
+	case CmdOK:
+		t = append(t, TagOK...)
 	case CmdERR:
-		transmission = append(transmission, r.ErrorCode)
+		t = append(t, TagERR...)
+		t = append(t, r.ErrorCode)
 	case CmdIDS:
-		// IDS body is pre-encoded in r.Body
-		transmission = append(transmission, r.Body...)
+		t = append(t, TagIDS...)
+		t = append(t, r.Body...) // pre-encoded IDS body
 	case CmdMSG:
-		transmission = append(transmission, r.MessageID[:]...)
-		// timestamp (8 bytes)
+		t = append(t, TagMSG...)
+		// msgId = shortString(24 bytes)
+		t = append(t, CorrIDSize)
+		t = append(t, r.MessageID[:]...)
+		// timestamp (8 bytes BE)
 		ts := make([]byte, 8)
-		ts[0] = byte(r.Timestamp >> 56)
-		ts[1] = byte(r.Timestamp >> 48)
-		ts[2] = byte(r.Timestamp >> 40)
-		ts[3] = byte(r.Timestamp >> 32)
-		ts[4] = byte(r.Timestamp >> 24)
-		ts[5] = byte(r.Timestamp >> 16)
-		ts[6] = byte(r.Timestamp >> 8)
-		ts[7] = byte(r.Timestamp)
-		transmission = append(transmission, ts...)
-		transmission = append(transmission, r.Flags)
-		transmission = append(transmission, r.Body...)
+		binary.BigEndian.PutUint64(ts, r.Timestamp)
+		t = append(t, ts...)
+		// flags
+		t = append(t, r.Flags)
+		// body (encrypted message content)
+		t = append(t, r.Body...)
+	case CmdEND:
+		t = append(t, TagEND...)
 	}
 
-	// Transmission length (2 bytes)
-	tLen := uint16(len(transmission))
-	buf = append(buf, byte(tLen>>8), byte(tLen))
-	buf = append(buf, transmission...)
+	// Wrap in content: transmissionCount + transmissionLength + transmission
+	content := make([]byte, 0, 3+len(t))
+	content = append(content, 0x01) // transmissionCount = 1
+	tLen := uint16(len(t))
+	content = append(content, byte(tLen>>8), byte(tLen))
+	content = append(content, t...)
 
-	return buf
+	return content
 }
 
-// ParsePayload extracts commands from a block payload
+// ParsePayload extracts commands from a block payload.
+//
+// Wire format:
+//
+//	content = transmissionCount(1 byte) + transmissions
+//	transmissions = transmissionLength(Word16 BE) + transmission [+ more]
+//	transmission = authorization + corrId + entityId + smpCommand
+//	authorization = shortString (1 byte len + sig bytes)
+//	corrId = 1 byte len + data (0x18 + 24 bytes, or 0x00)
+//	entityId = shortString (1 byte len + data)
+//	smpCommand = text tag + body
 func ParsePayload(payload []byte) ([]Command, error) {
 	if len(payload) < 1 {
 		return nil, ErrBlockTooShort
@@ -180,7 +225,19 @@ func ParsePayload(payload []byte) ([]Command, error) {
 	return commands, nil
 }
 
-// parseTransmission parses a single transmission into a Command
+// parseTransmission parses a single SMP transmission into a Command.
+//
+// Wire format:
+//
+//	transmission = authorization + authorized
+//	authorization = shortString (1 byte len + signature bytes)
+//	authorized = corrId + entityId + smpCommand
+//	corrId = 1 byte len + data
+//	entityId = shortString
+//	smpCommand = text tag + body
+//
+// Note: sessionIdentifier is NOT in wire format for v7.
+// It IS included in signature computation (handled by caller).
 func parseTransmission(data []byte) (Command, error) {
 	var cmd Command
 	offset := 0
@@ -189,7 +246,7 @@ func parseTransmission(data []byte) (Command, error) {
 		return cmd, ErrBlockTooShort
 	}
 
-	// Signature
+	// authorization = shortString (1 byte len + sig)
 	sigLen := int(data[offset])
 	offset++
 	if offset+sigLen > len(data) {
@@ -201,25 +258,29 @@ func parseTransmission(data []byte) (Command, error) {
 	}
 	offset += sigLen
 
-	// Everything from here to the end is the signed data
+	// Everything from here is the "authorized" part (signed data).
+	// For signature verification, we need: shortString(sessionID) + corrId + entityId + command
+	// But sessionID is NOT in the wire format - it's prepended by the verifier.
+	// So signedData captures: corrId + entityId + command (from wire)
 	signedStart := offset
 
-	// Session ID (skip for now)
+	// corrId = 1 byte len + data
 	if offset >= len(data) {
 		return cmd, ErrBlockTooShort
 	}
-	sessLen := int(data[offset])
+	corrIDLen := int(data[offset])
 	offset++
-	offset += sessLen
-
-	// Correlation ID (24 bytes)
-	if offset+24 > len(data) {
-		return cmd, ErrBlockTooShort
+	if corrIDLen > 0 {
+		if offset+corrIDLen > len(data) {
+			return cmd, ErrBlockTooShort
+		}
+		if corrIDLen >= CorrIDSize {
+			copy(cmd.CorrelationID[:], data[offset:offset+CorrIDSize])
+		}
 	}
-	copy(cmd.CorrelationID[:], data[offset:offset+24])
-	offset += 24
+	offset += corrIDLen
 
-	// Entity ID
+	// entityId = shortString
 	if offset >= len(data) {
 		return cmd, ErrBlockTooShort
 	}
@@ -229,27 +290,149 @@ func parseTransmission(data []byte) (Command, error) {
 		if offset+entityLen > len(data) {
 			return cmd, ErrBlockTooShort
 		}
-		copy(cmd.EntityID[:], data[offset:offset+entityLen])
+		if entityLen >= CorrIDSize {
+			copy(cmd.EntityID[:], data[offset:offset+CorrIDSize])
+		}
 		cmd.HasEntityID = true
 	}
 	offset += entityLen
 
-	// Command type
+	// smpCommand = text tag + body
 	if offset >= len(data) {
 		return cmd, ErrBlockTooShort
 	}
-	cmd.Type = data[offset]
-	offset++
 
-	// Remaining bytes are command-specific body
-	if offset < len(data) {
-		cmd.Body = make([]byte, len(data)-offset)
-		copy(cmd.Body, data[offset:])
-	}
+	remaining := data[offset:]
+	cmd.Type, cmd.Body = parseTextCommand(remaining)
 
-	// Capture signed data (everything after signature)
+	// Capture signed data (corrId through end of command)
 	cmd.SignedData = make([]byte, len(data)-signedStart)
 	copy(cmd.SignedData, data[signedStart:])
 
 	return cmd, nil
+}
+
+// parseTextCommand parses a text command tag and returns the internal
+// command byte code and the remaining body after the tag.
+func parseTextCommand(data []byte) (byte, []byte) {
+	// Check tags in order (longer tags first to avoid prefix conflicts)
+	type tagEntry struct {
+		tag  []byte
+		code byte
+	}
+	tags := []tagEntry{
+		{TagSEND, CmdSEND},
+		{TagPING, CmdPING},
+		{TagPONG, CmdPONG},
+		{TagNEW, CmdNEW},
+		{TagIDS, CmdIDS},
+		{TagSUB, CmdSUB},
+		{TagKEY, CmdKEY},
+		{TagMSG, CmdMSG},
+		{TagACK, CmdACK},
+		{TagOFF, CmdOFF},
+		{TagDEL, CmdDEL},
+		{TagOK, CmdOK},
+		{TagERR, CmdERR},
+		{TagEND, CmdEND},
+	}
+
+	for _, te := range tags {
+		if bytes.HasPrefix(data, te.tag) {
+			body := data[len(te.tag):]
+			if len(body) > 0 {
+				bodyCopy := make([]byte, len(body))
+				copy(bodyCopy, body)
+				return te.code, bodyCopy
+			}
+			return te.code, nil
+		}
+	}
+
+	// Unknown command
+	return 0xFF, nil
+}
+
+// BuildTransmission builds a single transmission for sending.
+// This is a helper for constructing SMP wire-format transmissions.
+//
+//	transmission = authorization + corrId + entityId + command
+//	authorization = shortString (0x00 for unsigned, or len + sig for signed)
+//	corrId = 0x18 + 24 bytes
+//	entityId = shortString
+func BuildTransmission(sig []byte, corrID [CorrIDSize]byte, entityID []byte, cmdTag []byte, cmdBody []byte) []byte {
+	t := make([]byte, 0, 128+len(cmdBody))
+
+	// authorization
+	if len(sig) > 0 {
+		t = append(t, byte(len(sig)))
+		t = append(t, sig...)
+	} else {
+		t = append(t, 0x00)
+	}
+
+	// corrId = length prefix + data
+	t = append(t, CorrIDSize)
+	t = append(t, corrID[:]...)
+
+	// entityId = shortString
+	if len(entityID) > 0 {
+		t = append(t, byte(len(entityID)))
+		t = append(t, entityID...)
+	} else {
+		t = append(t, 0x00)
+	}
+
+	// command tag + body
+	t = append(t, cmdTag...)
+	t = append(t, cmdBody...)
+
+	return t
+}
+
+// WrapTransmissionBlock wraps a transmission into a 16384-byte block.
+func WrapTransmissionBlock(transmission []byte) [BlockSize]byte {
+	content := make([]byte, 0, 3+len(transmission))
+	content = append(content, 0x01) // transmissionCount = 1
+	tLen := uint16(len(transmission))
+	content = append(content, byte(tLen>>8), byte(tLen))
+	content = append(content, transmission...)
+
+	var block [BlockSize]byte
+	binary.BigEndian.PutUint16(block[:2], uint16(len(content)))
+	copy(block[2:], content)
+	// Remaining bytes are zero (Go default) = zero padding per SMP spec
+	return block
+}
+
+// BuildSignedData builds the data that gets signed for a command.
+// signedData = shortString(sessionID) + corrId(len+data) + entityId(shortString) + cmdTag + cmdBody
+//
+// Note: sessionID is included in the signed data but NOT in the wire format (v7+).
+func BuildSignedData(sessionID []byte, corrID [CorrIDSize]byte, entityID []byte, cmdTag []byte, cmdBody []byte) []byte {
+	sd := make([]byte, 0, 128+len(cmdBody))
+
+	// shortString(sessionID) - included in signature computation
+	sd = append(sd, byte(len(sessionID)))
+	if len(sessionID) > 0 {
+		sd = append(sd, sessionID...)
+	}
+
+	// corrId = length prefix + data
+	sd = append(sd, CorrIDSize)
+	sd = append(sd, corrID[:]...)
+
+	// entityId = shortString
+	if len(entityID) > 0 {
+		sd = append(sd, byte(len(entityID)))
+		sd = append(sd, entityID...)
+	} else {
+		sd = append(sd, 0x00)
+	}
+
+	// command tag + body
+	sd = append(sd, cmdTag...)
+	sd = append(sd, cmdBody...)
+
+	return sd
 }

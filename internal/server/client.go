@@ -22,6 +22,7 @@ type Client struct {
 	rcvQ          chan common.Command
 	sndQ          chan common.Response
 	subscriptions map[[24]byte]bool
+	sessionID     []byte // TLS channel binding (tls-unique) for signature verification
 	createdAt     time.Time
 	commandCount  int64
 }

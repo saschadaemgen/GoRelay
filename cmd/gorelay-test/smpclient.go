@@ -17,8 +17,9 @@ import (
 
 // SMPClient wraps a TLS connection to an SMP server with block-level I/O.
 type SMPClient struct {
-	conn    net.Conn
-	verbose bool
+	conn      net.Conn
+	sessionID []byte // TLS channel binding for signature computation
+	verbose   bool
 }
 
 // ConnectSMP establishes a TLS connection, performs the SMP handshake,
@@ -45,7 +46,6 @@ func ConnectSMP(addr string, skipVerify bool, verbose bool) (*SMPClient, error) 
 	}
 
 	// Derive CA fingerprint from TLS peer certificate chain.
-	// PeerCertificates[0] = online cert, PeerCertificates[1] = CA cert.
 	caFingerprint := ""
 	if len(state.PeerCertificates) >= 2 {
 		caFingerprint = smp.ComputeCAFingerprint(state.PeerCertificates[1])
@@ -70,7 +70,7 @@ func ConnectSMP(addr string, skipVerify bool, verbose bool) (*SMPClient, error) 
 		fmt.Printf("  SMP handshake OK (version %d)\n", result.Version)
 	}
 
-	return &SMPClient{conn: conn, verbose: verbose}, nil
+	return &SMPClient{conn: conn, sessionID: state.TLSUnique, verbose: verbose}, nil
 }
 
 // Close closes the underlying connection.
@@ -85,7 +85,8 @@ func (c *SMPClient) SendPING() (common.Command, error) {
 		return common.Command{}, fmt.Errorf("generate corrID: %w", err)
 	}
 
-	block := buildPINGBlockCli(corrID)
+	t := common.BuildTransmission(nil, corrID, nil, common.TagPING, nil)
+	block := common.WrapTransmissionBlock(t)
 	if err := c.writeBlock(block); err != nil {
 		return common.Command{}, err
 	}
@@ -100,7 +101,20 @@ func (c *SMPClient) SendNEW(recipientPub ed25519.PublicKey) (recipientID, sender
 		return
 	}
 
-	block := buildNEWBlockCli(corrID, recipientPub)
+	// Build NEW body: authKey(shortString SPKI) + dhKey(shortString SPKI) + "0" + "S" + "T"
+	authKeySPKI := smp.EncodeEd25519SPKI(recipientPub)
+	// Generate dummy DH key
+	dhKeySPKI := smp.EncodeX25519SPKI(make([]byte, 32)) // placeholder
+
+	body := make([]byte, 0, 2+len(authKeySPKI)+len(dhKeySPKI)+3)
+	body = append(body, byte(len(authKeySPKI)))
+	body = append(body, authKeySPKI...)
+	body = append(body, byte(len(dhKeySPKI)))
+	body = append(body, dhKeySPKI...)
+	body = append(body, '0', 'S', 'T')
+
+	t := common.BuildTransmission(nil, corrID, nil, common.TagNEW, body)
+	block := common.WrapTransmissionBlock(t)
 	if err = c.writeBlock(block); err != nil {
 		return
 	}
@@ -120,15 +134,57 @@ func (c *SMPClient) SendNEW(recipientPub ed25519.PublicKey) (recipientID, sender
 		return
 	}
 
-	body := cmd.Body
-	if len(body) < 80 {
-		err = fmt.Errorf("IDS body too short: %d bytes", len(body))
+	// Parse IDS body: recipientId(shortString) + senderId(shortString) + dhKey(shortString) + sndSecure
+	idsBody := cmd.Body
+	off := 0
+
+	// recipientId
+	if off >= len(idsBody) {
+		err = fmt.Errorf("IDS body too short")
 		return
 	}
-	copy(recipientID[:], body[0:24])
-	copy(senderID[:], body[24:48])
-	dhPubKey = make([]byte, 32)
-	copy(dhPubKey, body[48:80])
+	rLen := int(idsBody[off])
+	off++
+	if off+rLen > len(idsBody) || rLen < 24 {
+		err = fmt.Errorf("IDS recipientId invalid")
+		return
+	}
+	copy(recipientID[:], idsBody[off:off+24])
+	off += rLen
+
+	// senderId
+	if off >= len(idsBody) {
+		err = fmt.Errorf("IDS body too short for senderId")
+		return
+	}
+	sLen := int(idsBody[off])
+	off++
+	if off+sLen > len(idsBody) || sLen < 24 {
+		err = fmt.Errorf("IDS senderId invalid")
+		return
+	}
+	copy(senderID[:], idsBody[off:off+24])
+	off += sLen
+
+	// srvDhPublicKey = shortString(SPKI)
+	if off >= len(idsBody) {
+		err = fmt.Errorf("IDS body too short for dhKey")
+		return
+	}
+	dhLen := int(idsBody[off])
+	off++
+	if off+dhLen > len(idsBody) {
+		err = fmt.Errorf("IDS dhKey invalid")
+		return
+	}
+	dhSPKI := idsBody[off : off+dhLen]
+
+	rawDH, parseErr := smp.ParseX25519SPKI(dhSPKI)
+	if parseErr != nil {
+		err = fmt.Errorf("parse DH SPKI: %w", parseErr)
+		return
+	}
+	dhPubKey = rawDH
 	return
 }
 
@@ -139,7 +195,13 @@ func (c *SMPClient) SendKEY(senderID [24]byte, senderPub ed25519.PublicKey) erro
 		return fmt.Errorf("generate corrID: %w", err)
 	}
 
-	block := buildKEYBlockCli(corrID, senderID, senderPub)
+	keySPKI := smp.EncodeEd25519SPKI(senderPub)
+	body := make([]byte, 0, 1+len(keySPKI))
+	body = append(body, byte(len(keySPKI)))
+	body = append(body, keySPKI...)
+
+	t := common.BuildTransmission(nil, corrID, senderID[:], common.TagKEY, body)
+	block := common.WrapTransmissionBlock(t)
 	if err := c.writeBlock(block); err != nil {
 		return err
 	}
@@ -164,7 +226,12 @@ func (c *SMPClient) SendSEND(senderID [24]byte, privKey ed25519.PrivateKey, msg 
 		return fmt.Errorf("generate corrID: %w", err)
 	}
 
-	block := buildSignedSENDBlockCli(corrID, senderID, privKey, msg)
+	// Sign: shortString(sessionID) + corrId + entityId + "SEND " + msg
+	signedData := common.BuildSignedData(c.sessionID, corrID, senderID[:], common.TagSEND, msg)
+	sig := ed25519.Sign(privKey, signedData)
+
+	t := common.BuildTransmission(sig, corrID, senderID[:], common.TagSEND, msg)
+	block := common.WrapTransmissionBlock(t)
 	if err := c.writeBlock(block); err != nil {
 		return err
 	}
@@ -189,7 +256,12 @@ func (c *SMPClient) SendSUB(recipientID [24]byte, privKey ed25519.PrivateKey) er
 		return fmt.Errorf("generate corrID: %w", err)
 	}
 
-	block := buildSUBBlockCli(corrID, recipientID, privKey)
+	// Sign with sessionID
+	signedData := common.BuildSignedData(c.sessionID, corrID, recipientID[:], common.TagSUB, nil)
+	sig := ed25519.Sign(privKey, signedData)
+
+	t := common.BuildTransmission(sig, corrID, recipientID[:], common.TagSUB, nil)
+	block := common.WrapTransmissionBlock(t)
 	if err := c.writeBlock(block); err != nil {
 		return err
 	}
@@ -203,7 +275,12 @@ func (c *SMPClient) SendACK(recipientID, msgID [24]byte) error {
 		return fmt.Errorf("generate corrID: %w", err)
 	}
 
-	block := buildACKBlockCli(corrID, recipientID, msgID)
+	body := make([]byte, 0, 25)
+	body = append(body, 24) // shortString length
+	body = append(body, msgID[:]...)
+
+	t := common.BuildTransmission(nil, corrID, recipientID[:], common.TagACK, body)
+	block := common.WrapTransmissionBlock(t)
 	if err := c.writeBlock(block); err != nil {
 		return err
 	}
@@ -222,7 +299,6 @@ func (c *SMPClient) SendACK(recipientID, msgID [24]byte) error {
 }
 
 // ReadMSG reads a raw block and parses it as a MSG response.
-// Returns msgID, timestamp, flags, body.
 func (c *SMPClient) ReadMSG() (msgID [24]byte, timestamp uint64, flags byte, body []byte, err error) {
 	resp, err := c.readResponseRaw()
 	if err != nil {
@@ -241,17 +317,24 @@ func (c *SMPClient) ReadMSG() (msgID [24]byte, timestamp uint64, flags byte, bod
 		err = fmt.Errorf("expected MSG (0x%02x), got 0x%02x", common.CmdMSG, cmd.Type)
 		return
 	}
-	if len(cmd.Body) < 33 {
-		err = fmt.Errorf("MSG body too short: %d", len(cmd.Body))
+	// MSG body: shortString(msgId) + timestamp(8) + flags(1) + body
+	mBody := cmd.Body
+	if len(mBody) < 1 {
+		err = fmt.Errorf("MSG body too short")
 		return
 	}
-	copy(msgID[:], cmd.Body[0:24])
-	timestamp = uint64(cmd.Body[24])<<56 | uint64(cmd.Body[25])<<48 |
-		uint64(cmd.Body[26])<<40 | uint64(cmd.Body[27])<<32 |
-		uint64(cmd.Body[28])<<24 | uint64(cmd.Body[29])<<16 |
-		uint64(cmd.Body[30])<<8 | uint64(cmd.Body[31])
-	flags = cmd.Body[32]
-	body = cmd.Body[33:]
+	mIDLen := int(mBody[0])
+	if 1+mIDLen+9 > len(mBody) || mIDLen < 24 {
+		err = fmt.Errorf("MSG body invalid: len=%d mIDLen=%d", len(mBody), mIDLen)
+		return
+	}
+	copy(msgID[:], mBody[1:1+24])
+	off := 1 + mIDLen
+	timestamp = binary.BigEndian.Uint64(mBody[off : off+8])
+	off += 8
+	flags = mBody[off]
+	off++
+	body = mBody[off:]
 	return
 }
 
@@ -298,104 +381,6 @@ func errorCode(cmd common.Command) byte {
 		return cmd.Body[0]
 	}
 	return 0
-}
-
-// --- block builders (mirrors test helpers but non-test) ---
-
-func wrapTransmission(transmission []byte) [common.BlockSize]byte {
-	payload := make([]byte, 0, 3+len(transmission))
-	payload = append(payload, 0x01) // batch count = 1
-	tLen := uint16(len(transmission))
-	payload = append(payload, byte(tLen>>8), byte(tLen))
-	payload = append(payload, transmission...)
-
-	var block [common.BlockSize]byte
-	binary.BigEndian.PutUint16(block[:2], uint16(len(payload)))
-	copy(block[2:], payload)
-	for i := 2 + len(payload); i < common.BlockSize; i++ {
-		block[i] = common.PaddingByte
-	}
-	return block
-}
-
-func buildPINGBlockCli(corrID [24]byte) [common.BlockSize]byte {
-	t := make([]byte, 0, 28)
-	t = append(t, 0x00)          // sig len = 0
-	t = append(t, 0x00)          // sess len = 0
-	t = append(t, corrID[:]...)  // corrID
-	t = append(t, 0x00)          // entity len = 0
-	t = append(t, common.CmdPING)
-	return wrapTransmission(t)
-}
-
-func buildNEWBlockCli(corrID [24]byte, recipientKey ed25519.PublicKey) [common.BlockSize]byte {
-	t := make([]byte, 0, 60)
-	t = append(t, 0x00)
-	t = append(t, 0x00)
-	t = append(t, corrID[:]...)
-	t = append(t, 0x00)
-	t = append(t, common.CmdNEW)
-	t = append(t, recipientKey...)
-	return wrapTransmission(t)
-}
-
-func buildKEYBlockCli(corrID [24]byte, senderID [24]byte, senderPubKey ed25519.PublicKey) [common.BlockSize]byte {
-	t := make([]byte, 0, 90)
-	t = append(t, 0x00)
-	t = append(t, 0x00)
-	t = append(t, corrID[:]...)
-	t = append(t, 24)
-	t = append(t, senderID[:]...)
-	t = append(t, common.CmdKEY)
-	t = append(t, senderPubKey...)
-	return wrapTransmission(t)
-}
-
-func buildSignedSENDBlockCli(corrID [24]byte, senderID [24]byte, privKey ed25519.PrivateKey, msgBody []byte) [common.BlockSize]byte {
-	signedData := make([]byte, 0, 1+24+1+24+1+len(msgBody))
-	signedData = append(signedData, 0x00)
-	signedData = append(signedData, corrID[:]...)
-	signedData = append(signedData, 24)
-	signedData = append(signedData, senderID[:]...)
-	signedData = append(signedData, common.CmdSEND)
-	signedData = append(signedData, msgBody...)
-
-	sig := ed25519.Sign(privKey, signedData)
-
-	t := make([]byte, 0, 1+len(sig)+len(signedData))
-	t = append(t, byte(len(sig)))
-	t = append(t, sig...)
-	t = append(t, signedData...)
-	return wrapTransmission(t)
-}
-
-func buildSUBBlockCli(corrID [24]byte, recipientID [24]byte, privKey ed25519.PrivateKey) [common.BlockSize]byte {
-	signedData := make([]byte, 0, 1+24+1+24+1)
-	signedData = append(signedData, 0x00)
-	signedData = append(signedData, corrID[:]...)
-	signedData = append(signedData, 24)
-	signedData = append(signedData, recipientID[:]...)
-	signedData = append(signedData, common.CmdSUB)
-
-	sig := ed25519.Sign(privKey, signedData)
-
-	t := make([]byte, 0, 1+len(sig)+len(signedData))
-	t = append(t, byte(len(sig)))
-	t = append(t, sig...)
-	t = append(t, signedData...)
-	return wrapTransmission(t)
-}
-
-func buildACKBlockCli(corrID [24]byte, recipientID [24]byte, msgID [24]byte) [common.BlockSize]byte {
-	t := make([]byte, 0, 80)
-	t = append(t, 0x00)
-	t = append(t, 0x00)
-	t = append(t, corrID[:]...)
-	t = append(t, 24)
-	t = append(t, recipientID[:]...)
-	t = append(t, common.CmdACK)
-	t = append(t, msgID[:]...)
-	return wrapTransmission(t)
 }
 
 // --- formatting ---

@@ -46,6 +46,18 @@ var x25519SPKIPrefix = []byte{
 // x25519SPKISize is the total size of an X25519 SPKI DER encoding.
 const x25519SPKISize = 12 + x25519PubKeySize // 44 bytes
 
+// ed25519SPKIPrefix is the ASN.1 DER prefix for an Ed25519 SubjectPublicKeyInfo.
+// SEQUENCE { SEQUENCE { OID 1.3.101.112 }, BIT STRING { key } }
+var ed25519SPKIPrefix = []byte{
+	0x30, 0x2a, // SEQUENCE, 42 bytes
+	0x30, 0x05, // SEQUENCE, 5 bytes (AlgorithmIdentifier)
+	0x06, 0x03, 0x2b, 0x65, 0x70, // OID 1.3.101.112 (Ed25519)
+	0x03, 0x21, 0x00, // BIT STRING, 33 bytes, 0 unused bits
+}
+
+// Ed25519SPKISize is the total size of an Ed25519 SPKI DER encoding.
+const Ed25519SPKISize = 12 + ed25519.PublicKeySize // 44 bytes
+
 // EncodeX25519SPKI encodes a raw 32-byte X25519 public key as X.509 SubjectPublicKeyInfo DER.
 func EncodeX25519SPKI(pubKey []byte) []byte {
 	spki := make([]byte, x25519SPKISize)
@@ -64,6 +76,27 @@ func ParseX25519SPKI(spki []byte) ([]byte, error) {
 	}
 	key := make([]byte, x25519PubKeySize)
 	copy(key, spki[len(x25519SPKIPrefix):])
+	return key, nil
+}
+
+// EncodeEd25519SPKI encodes a raw 32-byte Ed25519 public key as X.509 SubjectPublicKeyInfo DER.
+func EncodeEd25519SPKI(pubKey ed25519.PublicKey) []byte {
+	spki := make([]byte, Ed25519SPKISize)
+	copy(spki, ed25519SPKIPrefix)
+	copy(spki[len(ed25519SPKIPrefix):], pubKey)
+	return spki
+}
+
+// ParseEd25519SPKI extracts the raw 32-byte Ed25519 public key from SPKI DER encoding.
+func ParseEd25519SPKI(spki []byte) (ed25519.PublicKey, error) {
+	if len(spki) != Ed25519SPKISize {
+		return nil, fmt.Errorf("invalid Ed25519 SPKI length: %d", len(spki))
+	}
+	if subtle.ConstantTimeCompare(spki[:len(ed25519SPKIPrefix)], ed25519SPKIPrefix) != 1 {
+		return nil, fmt.Errorf("invalid Ed25519 SPKI prefix")
+	}
+	key := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	copy(key, spki[len(ed25519SPKIPrefix):])
 	return key, nil
 }
 

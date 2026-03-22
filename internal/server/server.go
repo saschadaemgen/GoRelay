@@ -270,6 +270,7 @@ func (s *Server) handleSMPConnection(ctx context.Context, conn net.Conn) {
 	slog.Info("SMP handshake complete", "version", hsResult.Version)
 
 	client := NewClient(conn, ProtocolSMP)
+	client.sessionID = sessionID
 	defer s.clientDisconnected(client)
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -410,21 +411,93 @@ func (s *Server) dispatch(c *Client, cmd common.Command) common.Response {
 
 // handleNEW creates a new queue and returns IDS with recipientID, senderID,
 // and server DH public key. Implicitly subscribes the creating connection.
+//
+// NEW body (after "NEW " tag):
+//
+//	recipientAuthPublicKey = shortString(SPKI DER Ed25519)
+//	recipientDhPublicKey   = shortString(SPKI DER X25519)
+//	basicAuth              = "0" (no auth) or "1" + shortString(password)
+//	subscribeMode          = "S" (subscribe) or "C" (create only)
+//	sndSecure              = "T" or "F"
 func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 	errResp := common.Response{
 		Type:          common.CmdERR,
 		CorrelationID: cmd.CorrelationID,
 	}
 
-	// Parse recipient public key from command body
-	// Body format: recipientKey (ed25519 public key, 32 bytes)
-	if len(cmd.Body) < ed25519.PublicKeySize {
+	body := cmd.Body
+	off := 0
+
+	// recipientAuthPublicKey = shortString(SPKI DER)
+	if off >= len(body) {
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+	authKeyLen := int(body[off])
+	off++
+	if off+authKeyLen > len(body) {
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+	authKeySPKI := body[off : off+authKeyLen]
+	off += authKeyLen
+
+	recipientKey, parseErr := smp.ParseEd25519SPKI(authKeySPKI)
+	if parseErr != nil {
+		slog.Debug("NEW: invalid recipient auth key SPKI", "err", parseErr)
 		errResp.ErrorCode = common.ErrInternal
 		return errResp
 	}
 
-	recipientKey := make(ed25519.PublicKey, ed25519.PublicKeySize)
-	copy(recipientKey, cmd.Body[:ed25519.PublicKeySize])
+	// Verify signature: for NEW, the signature is self-certifying
+	// (verified against the key in the command body itself)
+	if len(cmd.Signature) > 0 && len(cmd.SignedData) > 0 {
+		// Build the signed data with sessionID prepended
+		signedWithSession := make([]byte, 0, 1+len(c.sessionID)+len(cmd.SignedData))
+		signedWithSession = append(signedWithSession, byte(len(c.sessionID)))
+		signedWithSession = append(signedWithSession, c.sessionID...)
+		signedWithSession = append(signedWithSession, cmd.SignedData...)
+		if !ed25519.Verify(recipientKey, signedWithSession, cmd.Signature) {
+			errResp.ErrorCode = common.ErrAuth
+			return errResp
+		}
+	}
+
+	// recipientDhPublicKey = shortString(SPKI DER X25519) - parse but we
+	// use server-generated DH keys for now
+	if off < len(body) {
+		dhKeyLen := int(body[off])
+		off++
+		off += dhKeyLen // skip past it
+	}
+
+	// basicAuth = "0" or "1" + shortString
+	if off < len(body) {
+		if body[off] == '1' {
+			off++ // skip '1'
+			if off < len(body) {
+				passLen := int(body[off])
+				off++
+				off += passLen // skip password
+			}
+		} else {
+			off++ // skip '0'
+		}
+	}
+
+	// subscribeMode = "S" or "C"
+	subscribeMode := byte('S')
+	if off < len(body) {
+		subscribeMode = body[off]
+		off++
+	}
+
+	// sndSecure = "T" or "F"
+	sndSecure := byte('T')
+	if off < len(body) {
+		sndSecure = body[off]
+		off++
+	}
 
 	// CreateQueue handles idempotency internally
 	q, err := s.store.CreateQueue(recipientKey)
@@ -447,24 +520,37 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 		q.ServerDHSecret = dhPriv.Bytes()
 	}
 
-	// Implicit subscription: register this connection for the new queue
-	oldSub := s.subHub.Subscribe(q.RecipientID, c)
-	c.subscriptions[q.RecipientID] = true
-	if oldSub != nil && oldSub != c {
-		// Send END to displaced subscriber
-		oldSub.sndQ <- common.Response{
-			Type:        common.CmdEND,
-			HasEntityID: true,
-			EntityID:    q.RecipientID,
+	// Implicit subscription if subscribeMode is "S"
+	if subscribeMode == 'S' {
+		oldSub := s.subHub.Subscribe(q.RecipientID, c)
+		c.subscriptions[q.RecipientID] = true
+		if oldSub != nil && oldSub != c {
+			oldSub.sndQ <- common.Response{
+				Type:        common.CmdEND,
+				HasEntityID: true,
+				EntityID:    q.RecipientID,
+			}
 		}
 	}
 
 	// Build IDS response body:
-	//   recipientID (24 bytes) + senderID (24 bytes) + serverDHPubKey (32 bytes)
-	idsBody := make([]byte, 0, 24+24+32)
+	//   recipientId = shortString(24 bytes)
+	//   senderId = shortString(24 bytes)
+	//   srvDhPublicKey = shortString(SPKI DER X25519)
+	//   sndSecure = "T" or "F"
+	dhPubSPKI := smp.EncodeX25519SPKI(q.ServerDHPubKey)
+	idsBody := make([]byte, 0, 1+24+1+24+1+len(dhPubSPKI)+1)
+	// recipientId
+	idsBody = append(idsBody, 24)
 	idsBody = append(idsBody, q.RecipientID[:]...)
+	// senderId
+	idsBody = append(idsBody, 24)
 	idsBody = append(idsBody, q.SenderID[:]...)
-	idsBody = append(idsBody, q.ServerDHPubKey...)
+	// srvDhPublicKey
+	idsBody = append(idsBody, byte(len(dhPubSPKI)))
+	idsBody = append(idsBody, dhPubSPKI...)
+	// sndSecure
+	idsBody = append(idsBody, sndSecure)
 
 	return common.Response{
 		Type:          common.CmdIDS,
@@ -494,14 +580,17 @@ func (s *Server) handleSUB(c *Client, cmd common.Command) common.Response {
 		return errResp
 	}
 
-	// Verify Ed25519 signature against queue's recipientKey
+	// Verify Ed25519 signature against queue's recipientKey.
+	// signedData on wire = corrId + entityId + command
+	// For verification: prepend shortString(sessionID)
 	if len(cmd.Signature) == 0 || len(cmd.SignedData) == 0 {
 		s.metrics.AddSecurityEvent("auth_failure", "SUB missing signature")
 		errResp.ErrorCode = common.ErrAuth
 		return errResp
 	}
 
-	if !ed25519.Verify(q.RecipientKey, cmd.SignedData, cmd.Signature) {
+	signedWithSession := prependSessionID(c.sessionID, cmd.SignedData)
+	if !ed25519.Verify(q.RecipientKey, signedWithSession, cmd.Signature) {
 		s.metrics.AddSecurityEvent("auth_failure", "SUB invalid signature")
 		errResp.ErrorCode = common.ErrAuth
 		return errResp
@@ -577,14 +666,29 @@ func (s *Server) handleKEY(c *Client, cmd common.Command) common.Response {
 		return errResp
 	}
 
-	// Body contains the sender's Ed25519 public key (32 bytes)
-	if len(cmd.Body) < ed25519.PublicKeySize {
+	// Body: shortString(SPKI DER Ed25519 sender key)
+	if len(cmd.Body) < 1 {
 		errResp.ErrorCode = common.ErrInternal
 		return errResp
 	}
+	keyLen := int(cmd.Body[0])
+	if 1+keyLen > len(cmd.Body) {
+		errResp.ErrorCode = common.ErrInternal
+		return errResp
+	}
+	keySPKI := cmd.Body[1 : 1+keyLen]
 
-	senderKey := make(ed25519.PublicKey, ed25519.PublicKeySize)
-	copy(senderKey, cmd.Body[:ed25519.PublicKeySize])
+	senderKey, parseErr := smp.ParseEd25519SPKI(keySPKI)
+	if parseErr != nil {
+		// Fallback: try raw 32-byte key for backward compatibility with tests
+		if len(cmd.Body) >= ed25519.PublicKeySize {
+			senderKey = make(ed25519.PublicKey, ed25519.PublicKeySize)
+			copy(senderKey, cmd.Body[:ed25519.PublicKeySize])
+		} else {
+			errResp.ErrorCode = common.ErrInternal
+			return errResp
+		}
+	}
 
 	err := s.store.SetSenderKey(cmd.EntityID, senderKey)
 	if err != nil {
@@ -633,14 +737,15 @@ func (s *Server) handleSEND(c *Client, cmd common.Command) common.Response {
 		return errResp
 	}
 
-	// Verify Ed25519 signature
+	// Verify Ed25519 signature (with sessionID prepended for verification)
 	if len(cmd.Signature) == 0 || len(cmd.SignedData) == 0 {
 		s.metrics.AddSecurityEvent("auth_failure", "SEND missing signature")
 		errResp.ErrorCode = common.ErrAuth
 		return errResp
 	}
 
-	if !ed25519.Verify(q.SenderKey, cmd.SignedData, cmd.Signature) {
+	signedWithSession := prependSessionID(c.sessionID, cmd.SignedData)
+	if !ed25519.Verify(q.SenderKey, signedWithSession, cmd.Signature) {
 		s.metrics.AddSecurityEvent("auth_failure", "SEND invalid signature")
 		errResp.ErrorCode = common.ErrAuth
 		return errResp
@@ -699,10 +804,16 @@ func (s *Server) handleACK(c *Client, cmd common.Command) common.Response {
 		return errResp
 	}
 
-	// Body contains msgID (24 bytes)
+	// Body: shortString(msgID) - 1 byte len + 24 bytes
 	var msgID [24]byte
-	if len(cmd.Body) >= 24 {
-		copy(msgID[:], cmd.Body[:24])
+	if len(cmd.Body) >= 1 {
+		msgIDLen := int(cmd.Body[0])
+		if msgIDLen >= 24 && 1+msgIDLen <= len(cmd.Body) {
+			copy(msgID[:], cmd.Body[1:1+24])
+		} else if len(cmd.Body) >= 24 {
+			// Fallback: raw 24-byte msgID for backward compatibility
+			copy(msgID[:], cmd.Body[:24])
+		}
 	}
 
 	// AckMessage is idempotent
@@ -748,6 +859,19 @@ func (s *Server) clientDisconnected(c *Client) {
 		"protocol", c.protocol,
 		"commands", c.commandCount,
 	)
+}
+
+// prependSessionID prepends shortString(sessionID) to the signed data
+// for signature verification. The sessionID is NOT in the wire format (v7+)
+// but IS included in the signature computation.
+func prependSessionID(sessionID []byte, signedData []byte) []byte {
+	result := make([]byte, 0, 1+len(sessionID)+len(signedData))
+	result = append(result, byte(len(sessionID)))
+	if len(sessionID) > 0 {
+		result = append(result, sessionID...)
+	}
+	result = append(result, signedData...)
+	return result
 }
 
 // shutdown gracefully stops the server

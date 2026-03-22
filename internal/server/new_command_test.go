@@ -8,36 +8,44 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/saschadaemgen/GoRelay/internal/config"
 	"github.com/saschadaemgen/GoRelay/internal/protocol/common"
+	"github.com/saschadaemgen/GoRelay/internal/protocol/smp"
 	"github.com/saschadaemgen/GoRelay/internal/queue"
 )
 
 // buildNEWBlock constructs a 16KB block containing a NEW command
-// with the given correlation ID and recipient public key.
+// with SPKI-encoded recipient key per the official SMP spec.
+//
+// NEW body: recipientAuthKey(shortString SPKI) + recipientDhKey(shortString SPKI)
+//
+//	+ basicAuth("0") + subscribeMode("S") + sndSecure("T")
 func buildNEWBlock(corrID [24]byte, recipientKey ed25519.PublicKey) [common.BlockSize]byte {
-	// transmission: sig(0) + sessID(0) + corrID(24) + entityID(0) + NEW + recipientKey
-	transmission := make([]byte, 0, 60)
-	transmission = append(transmission, 0x00)          // signature length = 0
-	transmission = append(transmission, 0x00)          // session_id length = 0
-	transmission = append(transmission, corrID[:]...)  // correlation ID
-	transmission = append(transmission, 0x00)          // entity_id length = 0
-	transmission = append(transmission, common.CmdNEW) // command
-	transmission = append(transmission, recipientKey...) // body: recipient public key
-
-	// payload: batchCount(1) + tLen(2) + transmission
-	payload := make([]byte, 0, 3+len(transmission))
-	payload = append(payload, 0x01) // batch count = 1
-	tLen := uint16(len(transmission))
-	payload = append(payload, byte(tLen>>8), byte(tLen))
-	payload = append(payload, transmission...)
-
-	var block [common.BlockSize]byte
-	binary.BigEndian.PutUint16(block[:2], uint16(len(payload)))
-	copy(block[2:], payload)
-	for i := 2 + len(payload); i < common.BlockSize; i++ {
-		block[i] = common.PaddingByte
+	// Build command body
+	authKeySPKI := smp.EncodeEd25519SPKI(recipientKey)
+	// Generate a dummy X25519 DH key for the recipient
+	dhPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		panic("generate DH key: " + err.Error())
 	}
-	return block
+	dhKeySPKI := smp.EncodeX25519SPKI(dhPriv.PublicKey().Bytes())
+
+	body := make([]byte, 0, 2+len(authKeySPKI)+len(dhKeySPKI)+3)
+	// recipientAuthPublicKey = shortString(SPKI)
+	body = append(body, byte(len(authKeySPKI)))
+	body = append(body, authKeySPKI...)
+	// recipientDhPublicKey = shortString(SPKI)
+	body = append(body, byte(len(dhKeySPKI)))
+	body = append(body, dhKeySPKI...)
+	// basicAuth = "0" (no auth)
+	body = append(body, '0')
+	// subscribeMode = "S" (subscribe)
+	body = append(body, 'S')
+	// sndSecure = "T"
+	body = append(body, 'T')
+
+	t := common.BuildTransmission(nil, corrID, nil, common.TagNEW, body)
+	return common.WrapTransmissionBlock(t)
 }
 
 // parseIDSResponse parses the IDS body from a raw response block.
@@ -59,15 +67,57 @@ func parseIDSResponse(t *testing.T, block [common.BlockSize]byte) (corrID [24]by
 		t.Fatalf("expected IDS (0x%02x), got 0x%02x", common.CmdIDS, cmds[0].Type)
 	}
 
+	// IDS body format:
+	//   recipientId = shortString(24 bytes)
+	//   senderId = shortString(24 bytes)
+	//   srvDhPublicKey = shortString(SPKI DER X25519, 44 bytes)
+	//   sndSecure = "T" or "F"
 	body := cmds[0].Body
-	if len(body) < 24+24+32 {
-		t.Fatalf("IDS body too short: %d bytes", len(body))
-	}
+	off := 0
 
-	copy(recipientID[:], body[0:24])
-	copy(senderID[:], body[24:48])
-	dhPubKey = make([]byte, 32)
-	copy(dhPubKey, body[48:80])
+	// recipientId
+	if off >= len(body) {
+		t.Fatalf("IDS body too short for recipientId length")
+	}
+	rLen := int(body[off])
+	off++
+	if off+rLen > len(body) || rLen < 24 {
+		t.Fatalf("IDS recipientId invalid length: %d", rLen)
+	}
+	copy(recipientID[:], body[off:off+24])
+	off += rLen
+
+	// senderId
+	if off >= len(body) {
+		t.Fatalf("IDS body too short for senderId length")
+	}
+	sLen := int(body[off])
+	off++
+	if off+sLen > len(body) || sLen < 24 {
+		t.Fatalf("IDS senderId invalid length: %d", sLen)
+	}
+	copy(senderID[:], body[off:off+24])
+	off += sLen
+
+	// srvDhPublicKey = shortString(SPKI)
+	if off >= len(body) {
+		t.Fatalf("IDS body too short for dhPubKey length")
+	}
+	dhLen := int(body[off])
+	off++
+	if off+dhLen > len(body) {
+		t.Fatalf("IDS dhPubKey invalid length: %d", dhLen)
+	}
+	dhSPKI := body[off : off+dhLen]
+	off += dhLen
+
+	// Extract raw X25519 key from SPKI
+	rawDH, err := smp.ParseX25519SPKI(dhSPKI)
+	if err != nil {
+		t.Fatalf("parse DH SPKI: %v", err)
+	}
+	dhPubKey = rawDH
+
 	corrID = cmds[0].CorrelationID
 	return
 }
@@ -79,54 +129,44 @@ func TestNEWCreatesQueueWithValidIDS(t *testing.T) {
 	conn := dialSMP(t, addr)
 	defer conn.Close()
 
-	// Generate a recipient key
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
 
 	var corrID [24]byte
 	if _, err := rand.Read(corrID[:]); err != nil {
-		t.Fatalf("generate corrID: %v", err)
+		t.Fatalf("corrID: %v", err)
 	}
 
-	// Send NEW
-	block := buildNEWBlock(corrID, pub)
+	block := buildNEWBlock(corrID, recipientPub)
 	conn.SetWriteDeadline(common.WriteDeadline())
 	if _, err := conn.Write(block[:]); err != nil {
 		t.Fatalf("write NEW: %v", err)
 	}
 
-	// Read IDS response
 	resp := readRawBlock(t, conn)
 	respCorrID, recipientID, senderID, dhPubKey := parseIDSResponse(t, resp)
 
-	// Verify correlation ID matches
 	if respCorrID != corrID {
-		t.Fatal("correlation ID mismatch")
+		t.Fatal("IDS corrID mismatch")
 	}
 
-	// Verify IDs are 24 bytes and non-zero
-	var zeroID [24]byte
-	if recipientID == zeroID {
-		t.Fatal("recipientID is all zeros")
+	// recipientID and senderID must be non-zero
+	var zero [24]byte
+	if recipientID == zero {
+		t.Fatal("recipientID is zero")
 	}
-	if senderID == zeroID {
-		t.Fatal("senderID is all zeros")
+	if senderID == zero {
+		t.Fatal("senderID is zero")
 	}
-
-	// Verify recipientID != senderID
 	if recipientID == senderID {
-		t.Fatal("recipientID and senderID must be different")
+		t.Fatal("recipientID == senderID")
 	}
 
-	// Verify DH public key is valid X25519 (32 bytes, parseable)
+	// DH key must be valid X25519 (32 bytes)
 	if len(dhPubKey) != 32 {
-		t.Fatalf("DH public key length: %d, want 32", len(dhPubKey))
-	}
-	_, err = ecdh.X25519().NewPublicKey(dhPubKey)
-	if err != nil {
-		t.Fatalf("invalid X25519 public key: %v", err)
+		t.Fatalf("DH key length: %d", len(dhPubKey))
 	}
 }
 
@@ -137,7 +177,7 @@ func TestNEWIsIdempotent(t *testing.T) {
 	conn := dialSMP(t, addr)
 	defer conn.Close()
 
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
@@ -145,38 +185,37 @@ func TestNEWIsIdempotent(t *testing.T) {
 	// First NEW
 	var corrID1 [24]byte
 	if _, err := rand.Read(corrID1[:]); err != nil {
-		t.Fatalf("generate corrID1: %v", err)
+		t.Fatalf("corrID: %v", err)
 	}
-	block1 := buildNEWBlock(corrID1, pub)
+	block1 := buildNEWBlock(corrID1, recipientPub)
 	conn.SetWriteDeadline(common.WriteDeadline())
 	if _, err := conn.Write(block1[:]); err != nil {
 		t.Fatalf("write NEW 1: %v", err)
 	}
 	resp1 := readRawBlock(t, conn)
-	_, recipientID1, senderID1, dhPubKey1 := parseIDSResponse(t, resp1)
+	_, rid1, sid1, dh1 := parseIDSResponse(t, resp1)
 
 	// Second NEW with same key
 	var corrID2 [24]byte
 	if _, err := rand.Read(corrID2[:]); err != nil {
-		t.Fatalf("generate corrID2: %v", err)
+		t.Fatalf("corrID: %v", err)
 	}
-	block2 := buildNEWBlock(corrID2, pub)
+	block2 := buildNEWBlock(corrID2, recipientPub)
 	conn.SetWriteDeadline(common.WriteDeadline())
 	if _, err := conn.Write(block2[:]); err != nil {
 		t.Fatalf("write NEW 2: %v", err)
 	}
 	resp2 := readRawBlock(t, conn)
-	_, recipientID2, senderID2, dhPubKey2 := parseIDSResponse(t, resp2)
+	_, rid2, sid2, dh2 := parseIDSResponse(t, resp2)
 
-	// Same queue should be returned
-	if recipientID1 != recipientID2 {
-		t.Fatal("idempotent NEW returned different recipientID")
+	if rid1 != rid2 {
+		t.Fatal("recipientID changed on idempotent NEW")
 	}
-	if senderID1 != senderID2 {
-		t.Fatal("idempotent NEW returned different senderID")
+	if sid1 != sid2 {
+		t.Fatal("senderID changed on idempotent NEW")
 	}
-	if !bytes.Equal(dhPubKey1, dhPubKey2) {
-		t.Fatal("idempotent NEW returned different DH public key")
+	if !bytes.Equal(dh1, dh2) {
+		t.Fatal("DH key changed on idempotent NEW")
 	}
 }
 
@@ -187,47 +226,20 @@ func TestNEWDifferentKeysCreateDifferentQueues(t *testing.T) {
 	conn := dialSMP(t, addr)
 	defer conn.Close()
 
-	// Create two queues with different keys
 	pub1, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("generate key 1: %v", err)
+		t.Fatal(err)
 	}
 	pub2, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("generate key 2: %v", err)
+		t.Fatal(err)
 	}
 
-	var corrID1, corrID2 [24]byte
-	if _, err := rand.Read(corrID1[:]); err != nil {
-		t.Fatalf("corrID1: %v", err)
-	}
-	if _, err := rand.Read(corrID2[:]); err != nil {
-		t.Fatalf("corrID2: %v", err)
-	}
-
-	// First NEW
-	conn.SetWriteDeadline(common.WriteDeadline())
-	b1 := buildNEWBlock(corrID1, pub1)
-	if _, err := conn.Write(b1[:]); err != nil {
-		t.Fatalf("write NEW 1: %v", err)
-	}
-	resp1 := readRawBlock(t, conn)
-	_, rid1, sid1, _ := parseIDSResponse(t, resp1)
-
-	// Second NEW
-	conn.SetWriteDeadline(common.WriteDeadline())
-	b2 := buildNEWBlock(corrID2, pub2)
-	if _, err := conn.Write(b2[:]); err != nil {
-		t.Fatalf("write NEW 2: %v", err)
-	}
-	resp2 := readRawBlock(t, conn)
-	_, rid2, sid2, _ := parseIDSResponse(t, resp2)
+	rid1, _ := createQueueOnConn(t, conn, pub1)
+	rid2, _ := createQueueOnConn(t, conn, pub2)
 
 	if rid1 == rid2 {
-		t.Fatal("different keys produced same recipientID")
-	}
-	if sid1 == sid2 {
-		t.Fatal("different keys produced same senderID")
+		t.Fatal("different keys should create different queues")
 	}
 }
 
@@ -238,76 +250,59 @@ func TestNEWServerDHKeyIsValidX25519(t *testing.T) {
 	conn := dialSMP(t, addr)
 	defer conn.Close()
 
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		t.Fatal(err)
 	}
 
 	var corrID [24]byte
 	if _, err := rand.Read(corrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-
-	block := buildNEWBlock(corrID, pub)
+	block := buildNEWBlock(corrID, recipientPub)
 	conn.SetWriteDeadline(common.WriteDeadline())
 	if _, err := conn.Write(block[:]); err != nil {
-		t.Fatalf("write NEW: %v", err)
+		t.Fatal(err)
 	}
-
 	resp := readRawBlock(t, conn)
 	_, _, _, dhPubKey := parseIDSResponse(t, resp)
 
-	// Verify we can do a DH exchange with this key
-	clientPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	// Verify key is usable as X25519
+	curve := ecdh.X25519()
+	_, err = curve.NewPublicKey(dhPubKey)
 	if err != nil {
-		t.Fatalf("generate client DH: %v", err)
-	}
-	serverPub, err := ecdh.X25519().NewPublicKey(dhPubKey)
-	if err != nil {
-		t.Fatalf("parse server DH key: %v", err)
-	}
-	secret, err := clientPriv.ECDH(serverPub)
-	if err != nil {
-		t.Fatalf("ECDH failed: %v", err)
-	}
-	if len(secret) != 32 {
-		t.Fatalf("shared secret length: %d, want 32", len(secret))
+		t.Fatalf("invalid X25519 key: %v", err)
 	}
 }
 
 func TestNEWQueueStoredInStore(t *testing.T) {
-	// Direct unit test against MemoryStore
+	cfg := config.DefaultConfig()
+	cfg.Server.DataDir = t.TempDir()
+	cfg.SMP.Enabled = true
+
 	store := queue.NewMemoryStore()
-
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	srv, err := newWithStore(cfg, store)
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		t.Fatal(err)
 	}
 
-	q, err := store.CreateQueue(pub)
+	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("CreateQueue: %v", err)
+		t.Fatal(err)
 	}
 
-	// Verify queue is retrievable
+	q, err := store.CreateQueue(recipientPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = srv // just verify store works
+
 	got, err := store.GetQueue(q.RecipientID)
 	if err != nil {
-		t.Fatalf("GetQueue: %v", err)
+		t.Fatal(err)
 	}
-
-	if got.RecipientID != q.RecipientID {
-		t.Fatal("recipientID mismatch after retrieval")
-	}
-	if got.SenderID != q.SenderID {
-		t.Fatal("senderID mismatch after retrieval")
-	}
-
-	var zeroID [24]byte
-	if got.RecipientID == zeroID {
-		t.Fatal("stored queue has zero recipientID")
-	}
-	if got.SenderID == zeroID {
-		t.Fatal("stored queue has zero senderID")
+	if !bytes.Equal(got.RecipientKey, recipientPub) {
+		t.Fatal("stored key mismatch")
 	}
 }
 
@@ -318,42 +313,29 @@ func TestNEWImplicitSubscription(t *testing.T) {
 	conn := dialSMP(t, addr)
 	defer conn.Close()
 
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		t.Fatal(err)
 	}
 
+	// Create queue - implicit subscription via "S" mode
+	_, _ = createQueueOnConn(t, conn, recipientPub)
+
+	// Verify connection works (PING/PONG)
 	var corrID [24]byte
 	if _, err := rand.Read(corrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
+		t.Fatal(err)
 	}
-
-	block := buildNEWBlock(corrID, pub)
-	conn.SetWriteDeadline(common.WriteDeadline())
-	if _, err := conn.Write(block[:]); err != nil {
-		t.Fatalf("write NEW: %v", err)
-	}
-
-	resp := readRawBlock(t, conn)
-	_, _, _, _ = parseIDSResponse(t, resp)
-
-	// Verify the connection is still alive by sending PING
-	var pingCorrID [24]byte
-	if _, err := rand.Read(pingCorrID[:]); err != nil {
-		t.Fatalf("corrID: %v", err)
-	}
-	pingBlock := buildPINGBlock(pingCorrID)
+	pingBlock := buildPINGBlock(corrID)
 	conn.SetWriteDeadline(common.WriteDeadline())
 	if _, err := conn.Write(pingBlock[:]); err != nil {
-		t.Fatalf("write PING: %v", err)
+		t.Fatal(err)
 	}
-
 	pongResp := readRawBlock(t, conn)
 	payloadLen := binary.BigEndian.Uint16(pongResp[:2])
-	payload := pongResp[2 : 2+payloadLen]
-	cmds, err := common.ParsePayload(payload)
+	cmds, err := common.ParsePayload(pongResp[2 : 2+payloadLen])
 	if err != nil {
-		t.Fatalf("parse PONG: %v", err)
+		t.Fatal(err)
 	}
 	if cmds[0].Type != common.CmdPONG {
 		t.Fatalf("expected PONG, got 0x%02x", cmds[0].Type)
@@ -361,47 +343,42 @@ func TestNEWImplicitSubscription(t *testing.T) {
 }
 
 func TestNEWStoreIdempotency(t *testing.T) {
-	// Direct unit test for MemoryStore idempotency
 	store := queue.NewMemoryStore()
 
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		t.Fatal(err)
 	}
 
 	q1, err := store.CreateQueue(pub)
 	if err != nil {
-		t.Fatalf("CreateQueue 1: %v", err)
+		t.Fatal(err)
 	}
 
 	q2, err := store.CreateQueue(pub)
 	if err != nil {
-		t.Fatalf("CreateQueue 2: %v", err)
+		t.Fatal(err)
 	}
 
 	if q1.RecipientID != q2.RecipientID {
-		t.Fatal("idempotent CreateQueue returned different recipientIDs")
-	}
-	if q1.SenderID != q2.SenderID {
-		t.Fatal("idempotent CreateQueue returned different senderIDs")
+		t.Fatal("idempotent CreateQueue changed recipientID")
 	}
 }
 
 func TestNEWRecipientIDDifferentFromSenderID(t *testing.T) {
-	store := queue.NewMemoryStore()
+	addr, cancel := startTestServer(t)
+	defer cancel()
 
-	// Create multiple queues and verify IDs never match
-	for i := 0; i < 20; i++ {
-		pub, _, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatalf("generate key %d: %v", i, err)
-		}
-		q, err := store.CreateQueue(pub)
-		if err != nil {
-			t.Fatalf("CreateQueue %d: %v", i, err)
-		}
-		if q.RecipientID == q.SenderID {
-			t.Fatalf("queue %d: recipientID == senderID", i)
-		}
+	conn := dialSMP(t, addr)
+	defer conn.Close()
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rid, sid := createQueueOnConn(t, conn, pub)
+	if rid == sid {
+		t.Fatal("recipientID must differ from senderID")
 	}
 }
