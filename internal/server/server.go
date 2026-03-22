@@ -497,6 +497,12 @@ func (s *Server) dispatch(c *Client, cmd common.Command) common.Response {
 		return s.handleACK(c, cmd)
 	case common.CmdDEL:
 		return s.handleDEL(c, cmd)
+	case common.CmdPRXY:
+		return common.Response{
+			Type:          common.CmdERR,
+			CorrelationID: cmd.CorrelationID,
+			ErrorCode:     common.ErrProhibit,
+		}
 	default:
 		// TODO: implement all command handlers
 		return common.Response{

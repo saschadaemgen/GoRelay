@@ -33,6 +33,7 @@ const (
 	CmdPRES byte = 0x19
 	CmdQROT byte = 0x1A
 	CmdQACK byte = 0x1B
+	CmdPRXY byte = 0x11
 )
 
 // Wire text tags for SMP commands (as sent/received on the wire)
@@ -52,6 +53,7 @@ var (
 	TagPING = []byte("PING")
 	TagPONG = []byte("PONG")
 	TagEND  = []byte("END")
+	TagPRXY = []byte("PRXY ")
 )
 
 // Error codes - internal byte values for routing. The wire format uses text
@@ -373,6 +375,7 @@ func parseTextCommand(data []byte) (byte, []byte) {
 	tags := []tagEntry{
 		{TagSEND, CmdSEND},
 		{TagSKEY, CmdSKEY},
+		{TagPRXY, CmdPRXY},
 		{TagPING, CmdPING},
 		{TagPONG, CmdPONG},
 		{TagNEW, CmdNEW},
