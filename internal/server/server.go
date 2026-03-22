@@ -440,9 +440,14 @@ func (s *Server) sender(ctx context.Context, c *Client) {
 			slog.Debug("sender: context cancelled")
 			return
 		case resp := <-c.sndQ:
-			slog.Debug("sender: writing response", "type", fmt.Sprintf("0x%02x", resp.Type))
+			payload := resp.Serialize()
+			slog.Info("sender: writing response",
+				"type", fmt.Sprintf("0x%02x", resp.Type),
+				"payload_len", len(payload),
+				"payload_hex", hex.EncodeToString(payload),
+			)
 			c.conn.SetWriteDeadline(common.WriteDeadline())
-			if err := common.WriteBlock(c.conn, resp.Serialize()); err != nil {
+			if err := common.WriteBlock(c.conn, payload); err != nil {
 				slog.Debug("sender: write block failed", "err", err)
 				return
 			}
@@ -496,6 +501,13 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 	}
 
 	body := cmd.Body
+	slog.Info("NEW command debug",
+		"body_hex", hex.EncodeToString(body),
+		"body_len", len(body),
+		"has_signature", len(cmd.Signature) > 0,
+		"sig_len", len(cmd.Signature),
+		"corr_id_hex", hex.EncodeToString(cmd.CorrelationID[:]),
+	)
 	off := 0
 
 	// recipientAuthPublicKey = shortString(SPKI DER)
@@ -622,11 +634,28 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 	// sndSecure
 	idsBody = append(idsBody, sndSecure)
 
-	return common.Response{
+	idsResp := common.Response{
 		Type:          common.CmdIDS,
 		CorrelationID: cmd.CorrelationID,
 		Body:          idsBody,
 	}
+
+	// Debug: log the complete serialized transmission bytes
+	serialized := idsResp.Serialize()
+	slog.Info("IDS response debug",
+		"ids_body_hex", hex.EncodeToString(idsBody),
+		"ids_body_len", len(idsBody),
+		"serialized_hex", hex.EncodeToString(serialized),
+		"serialized_len", len(serialized),
+		"corr_id_hex", hex.EncodeToString(cmd.CorrelationID[:]),
+		"recipient_id_hex", hex.EncodeToString(q.RecipientID[:]),
+		"sender_id_hex", hex.EncodeToString(q.SenderID[:]),
+		"dh_spki_len", len(dhPubSPKI),
+		"dh_spki_hex", hex.EncodeToString(dhPubSPKI),
+		"snd_secure", string(sndSecure),
+	)
+
+	return idsResp
 }
 
 // handleSUB subscribes a connection to an existing queue.
