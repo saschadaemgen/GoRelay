@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -378,10 +379,20 @@ func ServerHandshake(conn net.Conn, params ServerHandshakeParams) (*HandshakeRes
 	// Verify CA fingerprint
 	if clientHello.KeyHash != params.CAFingerprint {
 		zeroECDHKey(privKey)
-		slog.Debug("ServerHandshake: CA fingerprint mismatch",
-			"expected_len", len(params.CAFingerprint),
-			"got_len", len(clientHello.KeyHash),
+
+		// Decode both values from base64 to raw bytes for hex comparison
+		ourRawHash, _ := base64.RawURLEncoding.DecodeString(params.CAFingerprint)
+		clientRawHash, _ := base64.RawURLEncoding.DecodeString(clientHello.KeyHash)
+
+		slog.Error("CA fingerprint mismatch",
+			"our_fingerprint_b64", params.CAFingerprint,
+			"our_fingerprint_hex", hex.EncodeToString(ourRawHash),
+			"our_fingerprint_len", len(ourRawHash),
+			"client_keyhash_b64", clientHello.KeyHash,
+			"client_keyhash_hex", hex.EncodeToString(clientRawHash),
+			"client_keyhash_len", len(clientRawHash),
 		)
+
 		return nil, ErrIdentityMismatch
 	}
 
@@ -545,7 +556,19 @@ func negotiateClientVersion(serverMin, serverMax, clientMin, clientMax uint16) (
 // getFingerprint caCert X.HashSHA256 hashes the complete DER bytes.
 func ComputeCAFingerprint(cert *x509.Certificate) string {
 	hash := sha256.Sum256(cert.Raw)
-	return base64.RawURLEncoding.EncodeToString(hash[:])
+	fp := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	first16 := cert.Raw[:16]
+	if len(cert.Raw) < 16 {
+		first16 = cert.Raw
+	}
+	slog.Info("CA cert debug",
+		"first16", hex.EncodeToString(first16),
+		"total_len", len(cert.Raw),
+		"fingerprint", fp,
+	)
+
+	return fp
 }
 
 // appendUint16BE appends a uint16 in big-endian byte order.

@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"log/slog"
@@ -362,7 +363,19 @@ func (cm *CertManager) loadOnlineCert() error {
 // implementation: getFingerprint caCert X.HashSHA256 hashes cert.Raw.
 func computeCertFingerprint(cert *x509.Certificate) string {
 	hash := sha256.Sum256(cert.Raw)
-	return base64.RawURLEncoding.EncodeToString(hash[:])
+	fp := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	first16 := cert.Raw[:16]
+	if len(cert.Raw) < 16 {
+		first16 = cert.Raw
+	}
+	slog.Info("CA cert debug",
+		"first16", hex.EncodeToString(first16),
+		"total_len", len(cert.Raw),
+		"fingerprint", fp,
+	)
+
+	return fp
 }
 
 // computePubKeyFingerprint returns SHA256 of the raw Ed25519 public key bytes,
