@@ -21,10 +21,8 @@ import (
 const (
 	// SMPVersionMin is the minimum SMP version supported
 	SMPVersionMin uint16 = 6
-	// SMPVersionMax is the maximum SMP version advertised in ServerHello.
-	// Matches the official Haskell SMP server v6.4.5.1 which advertises v6-v18.
-	// Internally we only implement v7; higher versions are clamped down.
-	SMPVersionMax uint16 = 18
+	// SMPVersionMax is the maximum SMP version supported
+	SMPVersionMax uint16 = 7
 
 	// X25519 public key size
 	x25519PubKeySize = 32
@@ -530,17 +528,9 @@ func ClientHandshake(conn net.Conn, params ClientHandshakeParams) (*ClientHandsh
 // --- Version negotiation ---
 
 // negotiateVersion validates a client's chosen version against the server range.
-// smpVersionImplMax is the highest SMP version we actually implement.
-// Versions above this are accepted but clamped down.
-const smpVersionImplMax uint16 = 7
-
 func negotiateVersion(serverMin, serverMax, clientVersion uint16) (uint16, error) {
 	if clientVersion < serverMin || clientVersion > serverMax {
 		return 0, ErrVersionMismatch
-	}
-	// Clamp to the highest version we actually implement
-	if clientVersion > smpVersionImplMax {
-		return smpVersionImplMax, nil
 	}
 	return clientVersion, nil
 }
@@ -557,10 +547,6 @@ func negotiateClientVersion(serverMin, serverMax, clientMin, clientMax uint16) (
 	}
 	if lo > hi {
 		return 0, ErrVersionMismatch
-	}
-	// Clamp to the highest version we actually implement
-	if hi > smpVersionImplMax {
-		hi = smpVersionImplMax
 	}
 	return hi, nil
 }
