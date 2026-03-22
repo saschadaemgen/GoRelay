@@ -324,13 +324,13 @@ func TestIntegrationACKIdempotent(t *testing.T) {
 	}
 }
 
-func TestIntegrationSENDBeforeKEY(t *testing.T) {
+func TestIntegrationSENDBeforeKEYAllowsConfirmation(t *testing.T) {
 	t.Parallel()
 
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	conn, sessID := dialSMPWithSession(t, addr)
+	conn, _ := dialSMPWithSession(t, addr)
 	defer conn.Close()
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
@@ -340,22 +340,18 @@ func TestIntegrationSENDBeforeKEY(t *testing.T) {
 
 	_, senderID := createQueueOnConn(t, conn, recipientPub)
 
-	_, senderPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("gen sender key: %v", err)
-	}
-
+	// Send unsigned SEND (no KEY set yet) - should succeed as confirmation message
 	var corrID [24]byte
 	if _, err := rand.Read(corrID[:]); err != nil {
 		t.Fatalf("corrID: %v", err)
 	}
 
-	cmd := sendAndReadResponse(t, conn, buildSignedSENDBlock(corrID, senderID, senderPriv, []byte("too early"), sessID))
-	if cmd.Type != common.CmdERR {
-		t.Fatalf("SEND before KEY: expected ERR, got 0x%02x", cmd.Type)
-	}
-	if string(cmd.Body) != "NO_KEY" {
-		t.Fatalf("expected NO_KEY error, got body: %q", string(cmd.Body))
+	sendBody := []byte("confirmation")
+	transmission := common.BuildTransmission(nil, corrID, senderID[:], common.TagSEND, sendBody)
+	block := common.WrapTransmissionBlock(transmission)
+	cmd := sendAndReadResponse(t, conn, block)
+	if cmd.Type != common.CmdOK {
+		t.Fatalf("SEND before KEY: expected OK, got 0x%02x (body: %q)", cmd.Type, string(cmd.Body))
 	}
 }
 

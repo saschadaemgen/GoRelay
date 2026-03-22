@@ -998,24 +998,21 @@ func (s *Server) handleSEND(c *Client, cmd common.Command) common.Response {
 		return errResp
 	}
 
-	// Verify sender key is set
-	if q.SenderKey == nil {
-		errResp.ErrorCode = common.ErrNoKey
-		return errResp
-	}
+	// If sender key is set, verify Ed25519 signature.
+	// If no sender key yet (confirmation message), allow unsigned SEND.
+	if q.SenderKey != nil {
+		if len(cmd.Signature) == 0 || len(cmd.SignedData) == 0 {
+			s.metrics.AddSecurityEvent("auth_failure", "SEND missing signature")
+			errResp.ErrorCode = common.ErrAuth
+			return errResp
+		}
 
-	// Verify Ed25519 signature (with sessionID prepended for verification)
-	if len(cmd.Signature) == 0 || len(cmd.SignedData) == 0 {
-		s.metrics.AddSecurityEvent("auth_failure", "SEND missing signature")
-		errResp.ErrorCode = common.ErrAuth
-		return errResp
-	}
-
-	signedWithSession := prependSessionID(c.sessionID, cmd.SignedData)
-	if !ed25519.Verify(q.SenderKey, signedWithSession, cmd.Signature) {
-		s.metrics.AddSecurityEvent("auth_failure", "SEND invalid signature")
-		errResp.ErrorCode = common.ErrAuth
-		return errResp
+		signedWithSession := prependSessionID(c.sessionID, cmd.SignedData)
+		if !ed25519.Verify(q.SenderKey, signedWithSession, cmd.Signature) {
+			s.metrics.AddSecurityEvent("auth_failure", "SEND invalid signature")
+			errResp.ErrorCode = common.ErrAuth
+			return errResp
+		}
 	}
 
 	// Store message (body is the encrypted message content)

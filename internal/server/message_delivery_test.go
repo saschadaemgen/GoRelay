@@ -210,11 +210,11 @@ func TestKEYTwiceReturnsAuthError(t *testing.T) {
 	}
 }
 
-func TestSENDWithoutKEYReturnsNoKeyError(t *testing.T) {
+func TestSENDWithoutKEYAllowsConfirmation(t *testing.T) {
 	addr, cancel := startTestServer(t)
 	defer cancel()
 
-	conn, sessID := dialSMPWithSession(t, addr)
+	conn, _ := dialSMPWithSession(t, addr)
 	defer conn.Close()
 
 	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
@@ -224,22 +224,18 @@ func TestSENDWithoutKEYReturnsNoKeyError(t *testing.T) {
 
 	_, senderID := createQueueOnConn(t, conn, recipientPub)
 
-	_, senderPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	// Send unsigned SEND (no KEY set yet) - should succeed as confirmation message
 	var corrID [24]byte
 	if _, err := rand.Read(corrID[:]); err != nil {
 		t.Fatal(err)
 	}
 
-	cmd := sendAndReadResponse(t, conn, buildSignedSENDBlock(corrID, senderID, senderPriv, []byte("test"), sessID))
-	if cmd.Type != common.CmdERR {
-		t.Fatalf("SEND: expected ERR, got 0x%02x", cmd.Type)
-	}
-	if string(cmd.Body) != "NO_KEY" {
-		t.Fatalf("SEND: expected NO_KEY error, got body: %q", string(cmd.Body))
+	sendBody := []byte("confirmation")
+	transmission := common.BuildTransmission(nil, corrID, senderID[:], common.TagSEND, sendBody)
+	block := common.WrapTransmissionBlock(transmission)
+	cmd := sendAndReadResponse(t, conn, block)
+	if cmd.Type != common.CmdOK {
+		t.Fatalf("SEND without KEY: expected OK, got 0x%02x (body: %q)", cmd.Type, string(cmd.Body))
 	}
 }
 
