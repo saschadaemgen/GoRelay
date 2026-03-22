@@ -38,7 +38,7 @@ type Queue struct {
 	RecipientKey   ed25519.PublicKey
 	SenderKey      ed25519.PublicKey // set via KEY command, nil until then
 	ServerDHPubKey []byte           // X25519 public key (32 bytes)
-	ServerDHSecret []byte           // NaCl precomputed shared key (32 bytes) from box.Precompute
+	ServerDHSecret []byte           // Raw X25519 DH shared secret (32 bytes) from ECDH()
 	Status         byte
 	CreatedAt      time.Time
 }

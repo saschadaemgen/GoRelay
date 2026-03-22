@@ -90,7 +90,7 @@ func parseMSGResponse(t *testing.T, block [common.BlockSize]byte) (msgID [24]byt
 }
 
 // parseMSGResponseEncrypted extracts and decrypts MSG fields from a raw block.
-// dhSharedKey is the NaCl precomputed shared key from box.Precompute.
+// dhSharedKey is the raw X25519 DH shared secret from ECDH().
 func parseMSGResponseEncrypted(t *testing.T, block [common.BlockSize]byte, dhSharedKey [32]byte) (msgID [24]byte, timestamp uint64, flags byte, body []byte) {
 	t.Helper()
 	cmd := parseResponseType(t, block)

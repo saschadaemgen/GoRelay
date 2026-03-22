@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
@@ -104,8 +105,13 @@ func (c *SMPClient) SendNEW(recipientPub ed25519.PublicKey) (recipientID, sender
 	// Build NEW body for v7: authKey(shortString SPKI) + dhKey(shortString SPKI) + subscribeMode("S")
 	// v7 does not include basicAuth or sndSecure
 	authKeySPKI := smp.EncodeEd25519SPKI(recipientPub)
-	// Generate dummy DH key
-	dhKeySPKI := smp.EncodeX25519SPKI(make([]byte, 32)) // placeholder
+	// Generate ephemeral X25519 DH key
+	dhPriv, dhGenErr := ecdh.X25519().GenerateKey(rand.Reader)
+	if dhGenErr != nil {
+		err = fmt.Errorf("generate DH key: %w", dhGenErr)
+		return
+	}
+	dhKeySPKI := smp.EncodeX25519SPKI(dhPriv.PublicKey().Bytes())
 
 	body := make([]byte, 0, 2+len(authKeySPKI)+len(dhKeySPKI)+1)
 	body = append(body, byte(len(authKeySPKI)))

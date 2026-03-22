@@ -1,14 +1,13 @@
 package server
 
 import (
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
 	"net"
 	"testing"
 	"time"
-
-	"golang.org/x/crypto/nacl/box"
 
 	"github.com/saschadaemgen/GoRelay/internal/protocol/common"
 )
@@ -72,14 +71,19 @@ func createQueueOnConnWithDH(t *testing.T, conn net.Conn, recipientPub ed25519.P
 	resp := readRawBlock(t, conn)
 	_, recipientID, senderID, serverDHPub := parseIDSResponse(t, resp)
 
-	// Compute NaCl precomputed shared key (same as server does)
-	var recipientPriv32, serverPub32 [32]byte
-	copy(recipientPriv32[:], recipientDHPriv.Bytes())
-	copy(serverPub32[:], serverDHPub)
-	box.Precompute(&dhSharedKey, &serverPub32, &recipientPriv32)
-	// Zero private key
-	for i := range recipientPriv32 {
-		recipientPriv32[i] = 0
+	// Compute raw X25519 DH shared secret (same as server does)
+	serverPubKey, err := ecdh.X25519().NewPublicKey(serverDHPub)
+	if err != nil {
+		t.Fatalf("parse server DH public key: %v", err)
+	}
+	rawSecret, err := recipientDHPriv.ECDH(serverPubKey)
+	if err != nil {
+		t.Fatalf("X25519 ECDH: %v", err)
+	}
+	copy(dhSharedKey[:], rawSecret)
+	// Zero raw secret
+	for i := range rawSecret {
+		rawSecret[i] = 0
 	}
 	return
 }

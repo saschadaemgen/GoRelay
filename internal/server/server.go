@@ -15,8 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/crypto/nacl/box"
-
 	"github.com/saschadaemgen/GoRelay/internal/config"
 	"github.com/saschadaemgen/GoRelay/internal/protocol/common"
 	"github.com/saschadaemgen/GoRelay/internal/protocol/smp"
@@ -656,25 +654,27 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 		}
 		q.ServerDHPubKey = dhPriv.PublicKey().Bytes()
 
-		// Compute NaCl precomputed shared key if recipient DH key is available
+		// Compute raw X25519 DH shared secret if recipient DH key is available
 		if len(recipientDhPubKeyRaw) == 32 {
-			var sharedKey [32]byte
-			var serverPriv32, recipientPub32 [32]byte
-			copy(serverPriv32[:], dhPriv.Bytes())
-			copy(recipientPub32[:], recipientDhPubKeyRaw)
-			box.Precompute(&sharedKey, &recipientPub32, &serverPriv32)
-
-			// Zero the raw server private key immediately
-			for i := range serverPriv32 {
-				serverPriv32[i] = 0
+			recipientPubKey, ecdhErr := ecdh.X25519().NewPublicKey(recipientDhPubKeyRaw)
+			if ecdhErr != nil {
+				slog.Error("invalid recipient DH public key", "err", ecdhErr)
+				errResp.ErrorCode = common.ErrInternal
+				return errResp
+			}
+			rawSecret, ecdhErr := dhPriv.ECDH(recipientPubKey)
+			if ecdhErr != nil {
+				slog.Error("X25519 ECDH failed", "err", ecdhErr)
+				errResp.ErrorCode = common.ErrInternal
+				return errResp
 			}
 
 			q.ServerDHSecret = make([]byte, 32)
-			copy(q.ServerDHSecret, sharedKey[:])
+			copy(q.ServerDHSecret, rawSecret)
 
-			// Zero the local shared key copy
-			for i := range sharedKey {
-				sharedKey[i] = 0
+			// Zero the raw ECDH output
+			for i := range rawSecret {
+				rawSecret[i] = 0
 			}
 		}
 
