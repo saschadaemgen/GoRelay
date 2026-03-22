@@ -23,6 +23,7 @@ type Client struct {
 	sndQ          chan common.Response
 	subscriptions map[[24]byte]bool
 	sessionID     []byte // TLS channel binding (tls-unique) for signature verification
+	smpVersion    uint16 // negotiated SMP protocol version (6, 7, etc.)
 	createdAt     time.Time
 	commandCount  int64
 }

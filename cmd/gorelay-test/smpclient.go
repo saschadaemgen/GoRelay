@@ -101,17 +101,18 @@ func (c *SMPClient) SendNEW(recipientPub ed25519.PublicKey) (recipientID, sender
 		return
 	}
 
-	// Build NEW body: authKey(shortString SPKI) + dhKey(shortString SPKI) + "0" + "S" + "T"
+	// Build NEW body for v7: authKey(shortString SPKI) + dhKey(shortString SPKI) + subscribeMode("S")
+	// v7 does not include basicAuth or sndSecure
 	authKeySPKI := smp.EncodeEd25519SPKI(recipientPub)
 	// Generate dummy DH key
 	dhKeySPKI := smp.EncodeX25519SPKI(make([]byte, 32)) // placeholder
 
-	body := make([]byte, 0, 2+len(authKeySPKI)+len(dhKeySPKI)+3)
+	body := make([]byte, 0, 2+len(authKeySPKI)+len(dhKeySPKI)+1)
 	body = append(body, byte(len(authKeySPKI)))
 	body = append(body, authKeySPKI...)
 	body = append(body, byte(len(dhKeySPKI)))
 	body = append(body, dhKeySPKI...)
-	body = append(body, '0', 'S', 'T')
+	body = append(body, 'S') // subscribeMode only for v7
 
 	t := common.BuildTransmission(nil, corrID, nil, common.TagNEW, body)
 	block := common.WrapTransmissionBlock(t)

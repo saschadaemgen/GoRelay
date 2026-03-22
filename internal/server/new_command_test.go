@@ -15,11 +15,11 @@ import (
 )
 
 // buildNEWBlock constructs a 16KB block containing a NEW command
-// with SPKI-encoded recipient key per the official SMP spec.
+// with SPKI-encoded recipient key using v7 format (no basicAuth, no sndSecure).
 //
-// NEW body: recipientAuthKey(shortString SPKI) + recipientDhKey(shortString SPKI)
+// v7 NEW body: recipientAuthKey(shortString SPKI) + recipientDhKey(shortString SPKI)
 //
-//	+ basicAuth("0") + subscribeMode("S") + sndSecure("T")
+//	+ subscribeMode("S")
 func buildNEWBlock(corrID [24]byte, recipientKey ed25519.PublicKey) [common.BlockSize]byte {
 	// Build command body
 	authKeySPKI := smp.EncodeEd25519SPKI(recipientKey)
@@ -30,19 +30,15 @@ func buildNEWBlock(corrID [24]byte, recipientKey ed25519.PublicKey) [common.Bloc
 	}
 	dhKeySPKI := smp.EncodeX25519SPKI(dhPriv.PublicKey().Bytes())
 
-	body := make([]byte, 0, 2+len(authKeySPKI)+len(dhKeySPKI)+3)
+	body := make([]byte, 0, 2+len(authKeySPKI)+len(dhKeySPKI)+1)
 	// recipientAuthPublicKey = shortString(SPKI)
 	body = append(body, byte(len(authKeySPKI)))
 	body = append(body, authKeySPKI...)
 	// recipientDhPublicKey = shortString(SPKI)
 	body = append(body, byte(len(dhKeySPKI)))
 	body = append(body, dhKeySPKI...)
-	// basicAuth = "0" (no auth)
-	body = append(body, '0')
-	// subscribeMode = "S" (subscribe)
+	// subscribeMode = "S" (subscribe) - v7 has no basicAuth or sndSecure
 	body = append(body, 'S')
-	// sndSecure = "T"
-	body = append(body, 'T')
 
 	t := common.BuildTransmission(nil, corrID, nil, common.TagNEW, body)
 	return common.WrapTransmissionBlock(t)
@@ -50,6 +46,7 @@ func buildNEWBlock(corrID [24]byte, recipientKey ed25519.PublicKey) [common.Bloc
 
 // parseIDSResponse parses the IDS body from a raw response block.
 // Returns recipientID, senderID, serverDHPubKey.
+// For v7, the IDS body does NOT include sndSecure.
 func parseIDSResponse(t *testing.T, block [common.BlockSize]byte) (corrID [24]byte, recipientID [24]byte, senderID [24]byte, dhPubKey []byte) {
 	t.Helper()
 
@@ -67,11 +64,11 @@ func parseIDSResponse(t *testing.T, block [common.BlockSize]byte) (corrID [24]by
 		t.Fatalf("expected IDS (0x%02x), got 0x%02x", common.CmdIDS, cmds[0].Type)
 	}
 
-	// IDS body format:
+	// IDS body format (v7):
 	//   recipientId = shortString(24 bytes)
 	//   senderId = shortString(24 bytes)
 	//   srvDhPublicKey = shortString(SPKI DER X25519, 44 bytes)
-	//   sndSecure = "T" or "F"
+	//   (no sndSecure in v7)
 	body := cmds[0].Body
 	off := 0
 
@@ -109,7 +106,6 @@ func parseIDSResponse(t *testing.T, block [common.BlockSize]byte) (corrID [24]by
 		t.Fatalf("IDS dhPubKey invalid length: %d", dhLen)
 	}
 	dhSPKI := body[off : off+dhLen]
-	off += dhLen
 
 	// Extract raw X25519 key from SPKI
 	rawDH, err := smp.ParseX25519SPKI(dhSPKI)
@@ -362,6 +358,56 @@ func TestNEWStoreIdempotency(t *testing.T) {
 
 	if q1.RecipientID != q2.RecipientID {
 		t.Fatal("idempotent CreateQueue changed recipientID")
+	}
+}
+
+func TestIDSResponseV7NoSndSecure(t *testing.T) {
+	// For SMP v7, the IDS response should NOT include sndSecure byte.
+	// Expected IDS body size: 1+24 + 1+24 + 1+44 = 95 bytes (no trailing 'T'/'F')
+	addr, cancel := startTestServer(t)
+	defer cancel()
+
+	conn := dialSMP(t, addr)
+	defer conn.Close()
+
+	recipientPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var corrID [24]byte
+	if _, err := rand.Read(corrID[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	block := buildNEWBlock(corrID, recipientPub)
+	conn.SetWriteDeadline(common.WriteDeadline())
+	if _, err := conn.Write(block[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := readRawBlock(t, conn)
+	payloadLen := binary.BigEndian.Uint16(resp[:2])
+	payload := resp[2 : 2+payloadLen]
+	cmds, err := common.ParsePayload(payload)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cmds[0].Type != common.CmdIDS {
+		t.Fatalf("expected IDS, got 0x%02x", cmds[0].Type)
+	}
+
+	// IDS body for v7: shortString(24) + shortString(24) + shortString(44) = 95 bytes
+	// No sndSecure byte at the end
+	expectedLen := 1 + 24 + 1 + 24 + 1 + 44 // = 95
+	if len(cmds[0].Body) != expectedLen {
+		t.Fatalf("IDS body length for v7: got %d, want %d (no sndSecure)", len(cmds[0].Body), expectedLen)
+	}
+
+	// Last byte should be the last byte of the SPKI DER, NOT 'T' or 'F'
+	lastByte := cmds[0].Body[len(cmds[0].Body)-1]
+	if lastByte == 'T' || lastByte == 'F' {
+		t.Fatalf("IDS v7 body should NOT end with sndSecure, but last byte is 0x%02x (%q)", lastByte, string(lastByte))
 	}
 }
 

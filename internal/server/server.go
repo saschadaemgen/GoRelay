@@ -295,6 +295,7 @@ func (s *Server) handleSMPConnection(ctx context.Context, conn net.Conn) {
 
 	client := NewClient(conn, ProtocolSMP)
 	client.sessionID = sessionID
+	client.smpVersion = hsResult.Version
 	defer s.clientDisconnected(client)
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -491,9 +492,9 @@ func (s *Server) dispatch(c *Client, cmd common.Command) common.Response {
 //
 //	recipientAuthPublicKey = shortString(SPKI DER Ed25519)
 //	recipientDhPublicKey   = shortString(SPKI DER X25519)
-//	basicAuth              = "0" (no auth) or "1" + shortString(password)
+//	basicAuth              = "0" (no auth) or "1" + shortString(password)  [v9+]
 //	subscribeMode          = "S" (subscribe) or "C" (create only)
-//	sndSecure              = "T" or "F"
+//	sndSecure              = "T" or "F"                                    [v9+]
 func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 	errResp := common.Response{
 		Type:          common.CmdERR,
@@ -502,6 +503,7 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 
 	body := cmd.Body
 	slog.Info("NEW command debug",
+		"smp_version", c.smpVersion,
 		"body_hex", hex.EncodeToString(body),
 		"body_len", len(body),
 		"has_signature", len(cmd.Signature) > 0,
@@ -553,32 +555,40 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 		off += dhKeyLen // skip past it
 	}
 
-	// basicAuth = "0" or "1" + shortString
-	if off < len(body) {
-		if body[off] == '1' {
-			off++ // skip '1'
-			if off < len(body) {
-				passLen := int(body[off])
-				off++
-				off += passLen // skip password
+	// Fields after recipientDhPublicKey depend on protocol version:
+	// v7-v8: subscribeMode only
+	// v9+:   basicAuth + subscribeMode + sndSecure
+	subscribeMode := byte('S')
+	sndSecure := byte('T')
+
+	if c.smpVersion >= 9 {
+		// basicAuth = "0" or "1" + shortString
+		if off < len(body) {
+			if body[off] == '1' {
+				off++ // skip '1'
+				if off < len(body) {
+					passLen := int(body[off])
+					off++
+					off += passLen // skip password
+				}
+			} else {
+				off++ // skip '0'
 			}
-		} else {
-			off++ // skip '0'
 		}
 	}
 
-	// subscribeMode = "S" or "C"
-	subscribeMode := byte('S')
+	// subscribeMode = "S" or "C" (all versions)
 	if off < len(body) {
 		subscribeMode = body[off]
 		off++
 	}
 
-	// sndSecure = "T" or "F"
-	sndSecure := byte('T')
-	if off < len(body) {
-		sndSecure = body[off]
-		off++
+	if c.smpVersion >= 9 {
+		// sndSecure = "T" or "F"
+		if off < len(body) {
+			sndSecure = body[off]
+			off++
+		}
 	}
 
 	// CreateQueue handles idempotency internally
@@ -619,7 +629,7 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 	//   recipientId = shortString(24 bytes)
 	//   senderId = shortString(24 bytes)
 	//   srvDhPublicKey = shortString(SPKI DER X25519)
-	//   sndSecure = "T" or "F"
+	//   sndSecure = "T" or "F"  [v9+ only]
 	dhPubSPKI := smp.EncodeX25519SPKI(q.ServerDHPubKey)
 	idsBody := make([]byte, 0, 1+24+1+24+1+len(dhPubSPKI)+1)
 	// recipientId
@@ -631,8 +641,10 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 	// srvDhPublicKey
 	idsBody = append(idsBody, byte(len(dhPubSPKI)))
 	idsBody = append(idsBody, dhPubSPKI...)
-	// sndSecure
-	idsBody = append(idsBody, sndSecure)
+	// sndSecure (v9+ only)
+	if c.smpVersion >= 9 {
+		idsBody = append(idsBody, sndSecure)
+	}
 
 	idsResp := common.Response{
 		Type:          common.CmdIDS,
