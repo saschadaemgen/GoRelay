@@ -36,7 +36,7 @@ const paddedSize = 2 + MaxMessageLength
 func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, sentBody []byte) []byte {
 	// sentBody wire format: flagsASCII + SP(0x20) + smpEncMessage
 	// flagsASCII is "T" (notification) or empty ""
-	// rcvMsgBody format: timestamp(8) + flagsByte(1) + smpEncMessage
+	// rcvMsgBody format: timestamp(8) + flagsByte(1) + uint16BE(len(smpEncMessage)) + smpEncMessage
 	var flagsByte byte = 'F'
 	var smpEncMessage []byte
 	if spIdx := bytes.IndexByte(sentBody, 0x20); spIdx >= 0 {
@@ -50,12 +50,15 @@ func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, sent
 		smpEncMessage = sentBody
 	}
 
-	// Build rcvMsgBody: timestamp(8) + flagsByte(1) + smpEncMessage
-	rcvMsgBody := make([]byte, 0, 8+1+len(smpEncMessage))
+	// Build rcvMsgBody: timestamp(8) + flagsByte(1) + uint16BE(len(smpEncMessage)) + smpEncMessage
+	rcvMsgBody := make([]byte, 0, 8+1+2+len(smpEncMessage))
 	ts := make([]byte, 8)
 	binary.BigEndian.PutUint64(ts, timestamp)
 	rcvMsgBody = append(rcvMsgBody, ts...)
 	rcvMsgBody = append(rcvMsgBody, flagsByte)
+	var encMsgLen [2]byte
+	binary.BigEndian.PutUint16(encMsgLen[:], uint16(len(smpEncMessage)))
+	rcvMsgBody = append(rcvMsgBody, encMsgLen[:]...)
 	rcvMsgBody = append(rcvMsgBody, smpEncMessage...)
 
 	slog.Info("DIAG: EncryptMsgBody rcvMsgBody",
