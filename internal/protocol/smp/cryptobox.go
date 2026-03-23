@@ -5,8 +5,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 
-	"golang.org/x/crypto/poly1305"
-	"golang.org/x/crypto/salsa20"
+	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/salsa20/salsa"
 )
 
@@ -68,130 +67,53 @@ func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, sent
 	return out
 }
 
-// simplexCryptoBox encrypts plaintext using the SimpleX custom XSalsa20 variant.
+// simplexCryptoBox encrypts plaintext using NaCl crypto_box_afternm.
 //
-// SimpleX (via Haskell cryptonite) uses three key derivation steps:
+// This is equivalent to Haskell's cbEncrypt:
 //
-//	Step 1: HSalsa20(key, zeros[16])      -> subkey1   (cryptonite initialize)
-//	Step 2: HSalsa20(subkey1, nonce[8:24]) -> subkey2   (cryptonite derive)
-//	Step 3: Salsa20(subkey2, nonce[0:8])   -> keystream
-//
-// This differs from standard NaCl which skips step 1.
+//	Step 1: HSalsa20(rawDHKey, zeros[16]) -> beforenmKey  (crypto_box_beforenm)
+//	Step 2: secretbox.Seal(beforenmKey, nonce, plaintext)  (crypto_box_afternm)
 //
 // Output: poly1305Tag(16) + ciphertext(len(plaintext))
 func simplexCryptoBox(key [32]byte, nonce [24]byte, plaintext []byte) []byte {
-	// Step 1: HSalsa20(key, zeros[16]) -> subkey1
-	var subkey1 [32]byte
+	// Step 1: crypto_box_beforenm = HSalsa20(rawDHKey, zeros[16])
+	var beforenmKey [32]byte
 	var zeros16 [16]byte
-	salsa.HSalsa20(&subkey1, &zeros16, &key, &salsa.Sigma)
+	salsa.HSalsa20(&beforenmKey, &zeros16, &key, &salsa.Sigma)
 
-	// Step 2: HSalsa20(subkey1, nonce[8:24]) -> subkey2
-	var subkey2 [32]byte
-	var hsInput [16]byte
-	copy(hsInput[:], nonce[8:24])
-	salsa.HSalsa20(&subkey2, &hsInput, &subkey1, &salsa.Sigma)
-
-	// Zero subkey1 immediately
-	for i := range subkey1 {
-		subkey1[i] = 0
-	}
-
-	// Step 3: Salsa20 XOR with subkey2 and nonce[0:8]
-	// Prepend 32 zero bytes for Poly1305 key extraction
-	buf := make([]byte, 32+len(plaintext))
-	copy(buf[32:], plaintext)
-
-	var salsaNonce [8]byte
-	copy(salsaNonce[:], nonce[0:8])
-	salsa20.XORKeyStream(buf, buf, salsaNonce[:], &subkey2)
-
-	// First 32 bytes XORed with zeros = raw keystream = Poly1305 one-time key
-	var polyKey [32]byte
-	copy(polyKey[:], buf[:32])
-	ciphertext := buf[32:]
-
-	// Poly1305 MAC over ciphertext
-	var tag [16]byte
-	poly1305.Sum(&tag, ciphertext, &polyKey)
+	// Step 2: crypto_box_afternm = standard NaCl secretbox
+	out := secretbox.Seal(nil, plaintext, &nonce, &beforenmKey)
 
 	// Zero sensitive material
-	for i := range subkey2 {
-		subkey2[i] = 0
-	}
-	for i := range polyKey {
-		polyKey[i] = 0
+	for i := range beforenmKey {
+		beforenmKey[i] = 0
 	}
 
-	// Output: tag(16) + ciphertext
-	result := make([]byte, 16+len(ciphertext))
-	copy(result[:16], tag[:])
-	copy(result[16:], ciphertext)
-
-	return result
+	return out
 }
 
 // SimplexCryptoBoxOpen decrypts ciphertext produced by simplexCryptoBox.
 // Returns the plaintext and true on success, or nil and false if authentication fails.
 func SimplexCryptoBoxOpen(key [32]byte, nonce [24]byte, box []byte) ([]byte, bool) {
-	if len(box) < 16 {
+	if len(box) < secretbox.Overhead {
 		return nil, false
 	}
 
-	// Split tag and ciphertext
-	var tag [16]byte
-	copy(tag[:], box[:16])
-	ciphertext := box[16:]
-
-	// Step 1: HSalsa20(key, zeros[16]) -> subkey1
-	var subkey1 [32]byte
+	// Step 1: crypto_box_beforenm = HSalsa20(rawDHKey, zeros[16])
+	var beforenmKey [32]byte
 	var zeros16 [16]byte
-	salsa.HSalsa20(&subkey1, &zeros16, &key, &salsa.Sigma)
+	salsa.HSalsa20(&beforenmKey, &zeros16, &key, &salsa.Sigma)
 
-	// Step 2: HSalsa20(subkey1, nonce[8:24]) -> subkey2
-	var subkey2 [32]byte
-	var hsInput [16]byte
-	copy(hsInput[:], nonce[8:24])
-	salsa.HSalsa20(&subkey2, &hsInput, &subkey1, &salsa.Sigma)
-
-	// Zero subkey1 immediately
-	for i := range subkey1 {
-		subkey1[i] = 0
-	}
-
-	// Step 3: Generate Poly1305 key by encrypting 32 zero bytes
-	var salsaNonce [8]byte
-	copy(salsaNonce[:], nonce[0:8])
-
-	polyKeyBuf := make([]byte, 32)
-	salsa20.XORKeyStream(polyKeyBuf, polyKeyBuf, salsaNonce[:], &subkey2)
-	var polyKey [32]byte
-	copy(polyKey[:], polyKeyBuf)
-
-	// Verify Poly1305 tag
-	if !poly1305.Verify(&tag, ciphertext, &polyKey) {
-		for i := range subkey2 {
-			subkey2[i] = 0
-		}
-		for i := range polyKey {
-			polyKey[i] = 0
-		}
-		return nil, false
-	}
-
-	// Decrypt: XOR ciphertext with keystream at counter offset 1 (after 32-byte poly key block)
-	// We need to XOR with the keystream starting at byte 32, so prepend 32 dummy bytes
-	buf := make([]byte, 32+len(ciphertext))
-	copy(buf[32:], ciphertext)
-	salsa20.XORKeyStream(buf, buf, salsaNonce[:], &subkey2)
-	plaintext := make([]byte, len(ciphertext))
-	copy(plaintext, buf[32:])
+	// Step 2: crypto_box_open_afternm = standard NaCl secretbox.Open
+	plaintext, ok := secretbox.Open(nil, box, &nonce, &beforenmKey)
 
 	// Zero sensitive material
-	for i := range subkey2 {
-		subkey2[i] = 0
+	for i := range beforenmKey {
+		beforenmKey[i] = 0
 	}
-	for i := range polyKey {
-		polyKey[i] = 0
+
+	if !ok {
+		return nil, false
 	}
 
 	return plaintext, true
