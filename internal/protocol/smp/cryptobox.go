@@ -50,10 +50,12 @@ func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, sent
 		smpEncMessage = sentBody
 	}
 
-	// Build rcvMsgBody: timestamp(8) + flagsByte(1) + uint16BE(len(smpEncMessage)) + smpEncMessage
-	rcvMsgBody := make([]byte, 0, 8+1+2+len(smpEncMessage))
-	ts := make([]byte, 8)
-	binary.BigEndian.PutUint64(ts, timestamp)
+	// Build rcvMsgBody: timestamp(12) + flagsByte(1) + uint16BE(len(smpEncMessage)) + smpEncMessage
+	// timestamp = int64BE(seconds)(8) + word32BE(nanoseconds)(4) = 12 bytes (Haskell SystemTime)
+	rcvMsgBody := make([]byte, 0, 12+1+2+len(smpEncMessage))
+	ts := make([]byte, 12)
+	binary.BigEndian.PutUint64(ts[0:8], timestamp)
+	binary.BigEndian.PutUint32(ts[8:12], 0) // nanoseconds = 0
 	rcvMsgBody = append(rcvMsgBody, ts...)
 	rcvMsgBody = append(rcvMsgBody, flagsByte)
 	var encMsgLen [2]byte

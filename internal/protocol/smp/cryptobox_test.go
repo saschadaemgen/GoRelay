@@ -59,31 +59,37 @@ func TestEncryptMsgBodyDecryptRoundtrip(t *testing.T) {
 
 	// Verify padded plaintext starts with uint16BE(len(rcvMsgBody))
 	rcvMsgBodyLen := binary.BigEndian.Uint16(decrypted[0:2])
-	// rcvMsgBody = timestamp(8) + flagsByte(1) + uint16BE(2) + smpEncMessage
-	expectedLen := uint16(8 + 1 + 2 + len(msgContent))
+	// rcvMsgBody = timestamp(12) + flagsByte(1) + uint16BE(2) + smpEncMessage
+	expectedLen := uint16(12 + 1 + 2 + len(msgContent))
 	if rcvMsgBodyLen != expectedLen {
 		t.Fatalf("rcvMsgBody length prefix: got %d, want %d", rcvMsgBodyLen, expectedLen)
 	}
 
-	// Verify timestamp
+	// Verify timestamp seconds
 	gotTS := binary.BigEndian.Uint64(decrypted[2:10])
 	if gotTS != timestamp {
 		t.Fatalf("timestamp: got %d, want %d", gotTS, timestamp)
 	}
 
-	// Verify flagsByte is 'T' (0x54) from "T" flag
-	if decrypted[10] != 'T' {
-		t.Fatalf("flagsByte: got 0x%02x, want 0x54 ('T')", decrypted[10])
+	// Verify timestamp nanoseconds = 0
+	gotNanos := binary.BigEndian.Uint32(decrypted[10:14])
+	if gotNanos != 0 {
+		t.Fatalf("nanoseconds: got %d, want 0", gotNanos)
 	}
 
-	// Verify uint16BE length prefix at offset 11-12
-	encMsgLen := binary.BigEndian.Uint16(decrypted[11:13])
+	// Verify flagsByte is 'T' (0x54) from "T" flag
+	if decrypted[14] != 'T' {
+		t.Fatalf("flagsByte: got 0x%02x, want 0x54 ('T')", decrypted[14])
+	}
+
+	// Verify uint16BE length prefix at offset 15-16
+	encMsgLen := binary.BigEndian.Uint16(decrypted[15:17])
 	if encMsgLen != uint16(len(msgContent)) {
 		t.Fatalf("smpEncMessage length prefix: got %d, want %d", encMsgLen, len(msgContent))
 	}
 
-	// Verify message content starts at offset 13
-	gotBody := decrypted[13 : 13+len(msgContent)]
+	// Verify message content starts at offset 17
+	gotBody := decrypted[17 : 17+len(msgContent)]
 	if string(gotBody) != string(msgContent) {
 		t.Fatalf("body: got %q, want %q", gotBody, msgContent)
 	}
@@ -117,14 +123,14 @@ func TestEncryptMsgBodyNoFlags(t *testing.T) {
 		t.Fatal("SimplexCryptoBoxOpen failed")
 	}
 
-	// flagsByte should be 'F' (0x46) for empty flags string
-	if decrypted[10] != 'F' {
-		t.Fatalf("flagsByte: got 0x%02x, want 0x46 ('F')", decrypted[10])
+	// flagsByte should be 'F' (0x46) for empty flags string (at offset 14 after 12-byte timestamp)
+	if decrypted[14] != 'F' {
+		t.Fatalf("flagsByte: got 0x%02x, want 0x46 ('F')", decrypted[14])
 	}
 
 	// Verify content
 	rcvLen := int(binary.BigEndian.Uint16(decrypted[0:2]))
-	expectedLen := 8 + 1 + 2 + len(msgContent)
+	expectedLen := 12 + 1 + 2 + len(msgContent)
 	if rcvLen != expectedLen {
 		t.Fatalf("rcvMsgBody length: got %d, want %d", rcvLen, expectedLen)
 	}
@@ -188,9 +194,9 @@ func TestEncryptMsgBodyEmptyBody(t *testing.T) {
 	}
 
 	rcvMsgBodyLen := binary.BigEndian.Uint16(decrypted[0:2])
-	// timestamp(8) + flagsByte(1) + uint16BE(2) + empty = 11
-	if rcvMsgBodyLen != 11 {
-		t.Fatalf("rcvMsgBody length for empty body: got %d, want 11", rcvMsgBodyLen)
+	// timestamp(12) + flagsByte(1) + uint16BE(2) + empty = 15
+	if rcvMsgBodyLen != 15 {
+		t.Fatalf("rcvMsgBody length for empty body: got %d, want 15", rcvMsgBodyLen)
 	}
 }
 
