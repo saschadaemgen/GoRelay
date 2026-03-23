@@ -363,11 +363,11 @@ func (s *Server) handleGRPConnection(ctx context.Context, conn net.Conn) {
 
 // receiver reads 16 KB blocks from the connection
 func (s *Server) receiver(ctx context.Context, c *Client) {
-	slog.Info("receiver goroutine started")
+	slog.Debug("receiver goroutine started")
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("receiver: context cancelled")
+			slog.Debug("receiver: context cancelled")
 			return
 		default:
 		}
@@ -375,26 +375,26 @@ func (s *Server) receiver(ctx context.Context, c *Client) {
 		c.conn.SetReadDeadline(common.ReadDeadline())
 		block, err := common.ReadBlock(c.conn)
 		if err != nil {
-			slog.Info("receiver: read block failed", "err", err)
+			slog.Debug("receiver: read block failed", "err", err)
 			return
 		}
 
-		slog.Info("receiver: got block", "first32", hex.EncodeToString(block[:min(32, len(block))]))
+		slog.Debug("receiver: got block", "first32", hex.EncodeToString(block[:min(32, len(block))]))
 
 		cmds, err := common.ParsePayload(block)
 		if err != nil {
-			slog.Info("receiver: parse error", "err", err, "first32", hex.EncodeToString(block[:min(32, len(block))]))
+			slog.Debug("receiver: parse error", "err", err, "first32", hex.EncodeToString(block[:min(32, len(block))]))
 			continue
 		}
 
-		slog.Info("receiver: parsed commands", "count", len(cmds))
+		slog.Debug("receiver: parsed commands", "count", len(cmds))
 
 		for _, cmd := range cmds {
-			slog.Info("receiver: dispatching command", "type", fmt.Sprintf("0x%02x", cmd.Type))
+			slog.Debug("receiver: dispatching command", "type", fmt.Sprintf("0x%02x", cmd.Type))
 			select {
 			case c.rcvQ <- cmd:
 			case <-ctx.Done():
-				slog.Info("receiver: context cancelled during dispatch")
+				slog.Debug("receiver: context cancelled during dispatch")
 				return
 			}
 		}
@@ -413,7 +413,6 @@ func (s *Server) processor(ctx context.Context, c *Client) {
 			slog.Info("received command",
 				"type", fmt.Sprintf("0x%02x", cmd.Type),
 				"has_entity_id", cmd.HasEntityID,
-				"entity_id_hex", hex.EncodeToString(cmd.EntityID[:]),
 				"has_sig", len(cmd.Signature) > 0,
 			)
 			resp := s.dispatch(c, cmd)
@@ -459,7 +458,7 @@ func (s *Server) sender(ctx context.Context, c *Client) {
 			return
 		case resp := <-c.sndQ:
 			payload := resp.Serialize()
-			slog.Info("sender: writing response",
+			slog.Debug("sender: writing response",
 				"type", fmt.Sprintf("0x%02x", resp.Type),
 				"payload_len", len(payload),
 				"payload_hex", hex.EncodeToString(payload),
@@ -529,7 +528,7 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 	}
 
 	body := cmd.Body
-	slog.Info("NEW command debug",
+	slog.Debug("NEW command debug",
 		"smp_version", c.smpVersion,
 		"body_hex", hex.EncodeToString(body),
 		"body_len", len(body),
@@ -728,16 +727,13 @@ func (s *Server) handleNEW(c *Client, cmd common.Command) common.Response {
 
 	// Debug: log the complete serialized transmission bytes
 	serialized := idsResp.Serialize()
-	slog.Info("IDS response debug",
+	slog.Debug("IDS response debug",
 		"ids_body_hex", hex.EncodeToString(idsBody),
 		"ids_body_len", len(idsBody),
 		"serialized_hex", hex.EncodeToString(serialized),
 		"serialized_len", len(serialized),
 		"corr_id_hex", hex.EncodeToString(cmd.CorrelationID[:]),
-		"recipient_id_hex", hex.EncodeToString(q.RecipientID[:]),
-		"sender_id_hex", hex.EncodeToString(q.SenderID[:]),
 		"dh_spki_len", len(dhPubSPKI),
-		"dh_spki_hex", hex.EncodeToString(dhPubSPKI),
 		"snd_secure", string(sndSecure),
 	)
 
