@@ -1,9 +1,13 @@
 package smp
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"testing"
+
+	"golang.org/x/crypto/nacl/secretbox"
+	"golang.org/x/crypto/salsa20/salsa"
 )
 
 func TestEncryptMsgBodyOutputLength(t *testing.T) {
@@ -190,5 +194,44 @@ func TestSimplexCryptoBoxOpenTampered(t *testing.T) {
 	_, ok := SimplexCryptoBoxOpen(key, nonce, encrypted)
 	if ok {
 		t.Fatal("decryption should fail with tampered ciphertext")
+	}
+}
+
+func TestCompareCustomVsStandardNaCl(t *testing.T) {
+	// Use a fixed key, nonce, plaintext
+	key := [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+		17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
+	nonce := [24]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}
+	plaintext := []byte("Hello World - test message for crypto comparison")
+
+	// Approach A: Our custom implementation (3-step HSalsa20)
+	customResult := simplexCryptoBox(key, nonce, plaintext)
+
+	// Approach B: Standard NaCl secretbox with beforenm key
+	// Our step 1 (HSalsa20(key, zeros)) is equivalent to crypto_box_beforenm
+	var beforenmKey [32]byte
+	var zeros16 [16]byte
+	salsa.HSalsa20(&beforenmKey, &zeros16, &key, &salsa.Sigma)
+	standardResult := secretbox.Seal(nil, plaintext, &nonce, &beforenmKey)
+
+	// Compare
+	t.Logf("Custom result (first 32): %x", customResult[:32])
+	t.Logf("Standard result (first 32): %x", standardResult[:32])
+	t.Logf("Custom len: %d, Standard len: %d", len(customResult), len(standardResult))
+
+	if bytes.Equal(customResult, standardResult) {
+		t.Log("MATCH - custom and standard NaCl produce identical output")
+	} else {
+		t.Log("MISMATCH - custom differs from standard NaCl!")
+		t.Log("This means we should switch to standard NaCl secretbox")
+	}
+
+	// Also try: standard NaCl with RAW key (no beforenm)
+	directResult := secretbox.Seal(nil, plaintext, &nonce, &key)
+	t.Logf("Direct result (first 32): %x", directResult[:32])
+	if bytes.Equal(customResult, directResult) {
+		t.Log("Custom matches direct secretbox (no beforenm)")
+	} else if bytes.Equal(standardResult, directResult) {
+		t.Log("Direct secretbox matches standard (beforenm) - unexpected")
 	}
 }
