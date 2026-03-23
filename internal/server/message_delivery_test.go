@@ -27,19 +27,26 @@ func buildKEYBlock(corrID [24]byte, recipientID [24]byte, senderPubKey ed25519.P
 }
 
 // buildSignedSENDBlock constructs a signed SEND command block.
-// The signature covers: shortString(sessionID) + corrId + entityId + "SEND " + msgBody
+// The SEND body wire format is: smpFlags + SP(0x20) + smpEncMessage
+// msgBody is the raw message content; this function prepends empty flags + SP.
+// The signature covers: shortString(sessionID) + corrId + entityId + "SEND " + wireBody
 func buildSignedSENDBlock(corrID [24]byte, senderID [24]byte, privKey ed25519.PrivateKey, msgBody []byte, sessionID ...[]byte) [common.BlockSize]byte {
 	var sessID []byte
 	if len(sessionID) > 0 {
 		sessID = sessionID[0]
 	}
 
+	// Wire body: empty flags + SP + message content
+	wireBody := make([]byte, 0, 1+len(msgBody))
+	wireBody = append(wireBody, 0x20) // empty flags + SP
+	wireBody = append(wireBody, msgBody...)
+
 	// Build signed data with sessionID
-	signedData := common.BuildSignedData(sessID, corrID, senderID[:], common.TagSEND, msgBody)
+	signedData := common.BuildSignedData(sessID, corrID, senderID[:], common.TagSEND, wireBody)
 	sig := ed25519.Sign(privKey, signedData)
 
 	// Build wire transmission (sessionID NOT in wire)
-	t := common.BuildTransmission(sig, corrID, senderID[:], common.TagSEND, msgBody)
+	t := common.BuildTransmission(sig, corrID, senderID[:], common.TagSEND, wireBody)
 	return common.WrapTransmissionBlock(t)
 }
 
@@ -125,12 +132,13 @@ func parseMSGResponseEncrypted(t *testing.T, block [common.BlockSize]byte, dhSha
 	}
 	rcvBody := decrypted[2 : 2+rcvLen]
 
-	// rcvMsgBody = timestamp(8) + sentBody
-	if len(rcvBody) < 8 {
+	// rcvMsgBody = timestamp(8) + flagsByte(1) + smpEncMessage
+	if len(rcvBody) < 9 {
 		t.Fatalf("rcvMsgBody too short: %d", len(rcvBody))
 	}
 	timestamp = binary.BigEndian.Uint64(rcvBody[0:8])
-	body = rcvBody[8:]
+	flags = rcvBody[8]
+	body = rcvBody[9:]
 	return
 }
 

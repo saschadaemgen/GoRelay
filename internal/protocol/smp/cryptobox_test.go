@@ -16,8 +16,9 @@ func TestEncryptMsgBodyOutputLength(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body := []byte("hello world")
-	out := EncryptMsgBody(key, msgId, 1234567890, body)
+	// sentBody: no flags + SP + message content
+	sentBody := append([]byte(" "), []byte("hello world")...)
+	out := EncryptMsgBody(key, msgId, 1234567890, sentBody)
 
 	// 16 (auth tag) + 16066 (padded plaintext) = 16082
 	expected := 16082
@@ -37,11 +38,11 @@ func TestEncryptMsgBodyDecryptRoundtrip(t *testing.T) {
 	}
 
 	timestamp := uint64(1711100000)
-	// sentBody already contains flags + SP + message content
-	flags := byte(0x01)
+	// sentBody wire format: flagsASCII + SP + smpEncMessage
+	// "T" means notification flag -> binary 0x01
 	msgContent := []byte("test message content")
 	sentBody := make([]byte, 0, 2+len(msgContent))
-	sentBody = append(sentBody, flags, 0x20)
+	sentBody = append(sentBody, 'T', 0x20)
 	sentBody = append(sentBody, msgContent...)
 
 	encrypted := EncryptMsgBody(key, msgId, timestamp, sentBody)
@@ -58,7 +59,8 @@ func TestEncryptMsgBodyDecryptRoundtrip(t *testing.T) {
 
 	// Verify padded plaintext starts with uint16BE(len(rcvMsgBody))
 	rcvMsgBodyLen := binary.BigEndian.Uint16(decrypted[0:2])
-	expectedLen := uint16(8 + len(sentBody)) // timestamp + sentBody (which includes flags+SP+content)
+	// rcvMsgBody = timestamp(8) + flagsByte(1) + smpEncMessage
+	expectedLen := uint16(8 + 1 + len(msgContent))
 	if rcvMsgBodyLen != expectedLen {
 		t.Fatalf("rcvMsgBody length prefix: got %d, want %d", rcvMsgBodyLen, expectedLen)
 	}
@@ -69,18 +71,13 @@ func TestEncryptMsgBodyDecryptRoundtrip(t *testing.T) {
 		t.Fatalf("timestamp: got %d, want %d", gotTS, timestamp)
 	}
 
-	// Verify flags (now part of sentBody, at offset 10)
-	if decrypted[10] != flags {
-		t.Fatalf("flags: got 0x%02x, want 0x%02x", decrypted[10], flags)
+	// Verify flagsByte is 0x01 (from "T")
+	if decrypted[10] != 0x01 {
+		t.Fatalf("flagsByte: got 0x%02x, want 0x01", decrypted[10])
 	}
 
-	// Verify SP separator (at offset 11)
-	if decrypted[11] != 0x20 {
-		t.Fatalf("SP: got 0x%02x, want 0x20", decrypted[11])
-	}
-
-	// Verify message content
-	gotBody := decrypted[12 : 12+len(msgContent)]
+	// Verify message content starts at offset 11
+	gotBody := decrypted[11 : 11+len(msgContent)]
 	if string(gotBody) != string(msgContent) {
 		t.Fatalf("body: got %q, want %q", gotBody, msgContent)
 	}
@@ -93,13 +90,47 @@ func TestEncryptMsgBodyDecryptRoundtrip(t *testing.T) {
 	}
 }
 
+func TestEncryptMsgBodyNoFlags(t *testing.T) {
+	var key [32]byte
+	var msgId [24]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rand.Read(msgId[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	// sentBody with empty flags: SP + smpEncMessage
+	msgContent := []byte("no flags message")
+	sentBody := append([]byte(" "), msgContent...)
+
+	encrypted := EncryptMsgBody(key, msgId, 100, sentBody)
+
+	decrypted, ok := SimplexCryptoBoxOpen(key, msgId, encrypted)
+	if !ok {
+		t.Fatal("SimplexCryptoBoxOpen failed")
+	}
+
+	// flagsByte should be 0x00 (empty flags string)
+	if decrypted[10] != 0x00 {
+		t.Fatalf("flagsByte: got 0x%02x, want 0x00", decrypted[10])
+	}
+
+	// Verify content
+	rcvLen := int(binary.BigEndian.Uint16(decrypted[0:2]))
+	expectedLen := 8 + 1 + len(msgContent)
+	if rcvLen != expectedLen {
+		t.Fatalf("rcvMsgBody length: got %d, want %d", rcvLen, expectedLen)
+	}
+}
+
 func TestEncryptMsgBodyNonceUniqueness(t *testing.T) {
 	var key [32]byte
 	if _, err := rand.Read(key[:]); err != nil {
 		t.Fatal(err)
 	}
 
-	body := []byte("same body")
+	body := append([]byte(" "), []byte("same body")...)
 
 	var msgId1, msgId2 [24]byte
 	if _, err := rand.Read(msgId1[:]); err != nil {
@@ -138,7 +169,7 @@ func TestEncryptMsgBodyEmptyBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Empty sent body should still work
+	// Empty sent body (no SP) - treated as no flags, empty smpEncMessage
 	out := EncryptMsgBody(key, msgId, 0, nil)
 	if len(out) != 16082 {
 		t.Fatalf("output length with empty body: got %d, want 16082", len(out))
@@ -151,9 +182,9 @@ func TestEncryptMsgBodyEmptyBody(t *testing.T) {
 	}
 
 	rcvMsgBodyLen := binary.BigEndian.Uint16(decrypted[0:2])
-	// timestamp(8) + empty sentBody = 8
-	if rcvMsgBodyLen != 8 {
-		t.Fatalf("rcvMsgBody length for empty body: got %d, want 8", rcvMsgBodyLen)
+	// timestamp(8) + flagsByte(1) + empty = 9
+	if rcvMsgBodyLen != 9 {
+		t.Fatalf("rcvMsgBody length for empty body: got %d, want 9", rcvMsgBodyLen)
 	}
 }
 

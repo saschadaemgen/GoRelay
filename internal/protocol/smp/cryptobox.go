@@ -1,6 +1,7 @@
 package smp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"log/slog"
@@ -22,8 +23,9 @@ const paddedSize = 2 + MaxMessageLength
 // Wire format per SMP spec:
 //
 //	encryptedRcvMsgBody = simplexCryptoBox(padded(rcvMsgBody))
-//	rcvMsgBody = timestamp(8 bytes BE) + sentMsgBody
-//	sentMsgBody already contains: msgFlags(1 byte) + SP(0x20) + smpEncMessage
+//	sentBody wire format: flagsASCII + SP(0x20) + smpEncMessage
+//	rcvMsgBody = timestamp(8 bytes BE) + flagsByte(1 byte) + smpEncMessage
+//	flagsByte: 0x01 if flagsASCII=="T" (notification), 0x00 otherwise
 //	padded(data, maxLen) = originalLength(2 bytes BE) + data + zero-fill to maxLen
 //	maxLen = MaxMessageLength + 2 = 16066
 //
@@ -32,13 +34,29 @@ const paddedSize = 2 + MaxMessageLength
 //
 // Returns: authTag(16) + ciphertext(16066) = 16082 bytes total.
 func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, sentBody []byte) []byte {
-	// Build rcvMsgBody: timestamp(8) + sentBody
-	// sentBody already includes flags + SP + smpEncMessage from SEND command
-	rcvMsgBody := make([]byte, 0, 8+len(sentBody))
+	// sentBody wire format: flagsASCII + SP(0x20) + smpEncMessage
+	// flagsASCII is "T" (notification) or empty ""
+	// rcvMsgBody format: timestamp(8) + flagsByte(1) + smpEncMessage
+	var flagsByte byte
+	var smpEncMessage []byte
+	if spIdx := bytes.IndexByte(sentBody, 0x20); spIdx >= 0 {
+		flagsStr := sentBody[:spIdx]
+		smpEncMessage = sentBody[spIdx+1:]
+		if bytes.Equal(flagsStr, []byte("T")) {
+			flagsByte = 0x01 // notification flag
+		}
+	} else {
+		// No SP found - treat entire sentBody as smpEncMessage
+		smpEncMessage = sentBody
+	}
+
+	// Build rcvMsgBody: timestamp(8) + flagsByte(1) + smpEncMessage
+	rcvMsgBody := make([]byte, 0, 8+1+len(smpEncMessage))
 	ts := make([]byte, 8)
 	binary.BigEndian.PutUint64(ts, timestamp)
 	rcvMsgBody = append(rcvMsgBody, ts...)
-	rcvMsgBody = append(rcvMsgBody, sentBody...)
+	rcvMsgBody = append(rcvMsgBody, flagsByte)
+	rcvMsgBody = append(rcvMsgBody, smpEncMessage...)
 
 	slog.Info("DIAG: EncryptMsgBody rcvMsgBody",
 		"rcvMsgBody_len", len(rcvMsgBody),

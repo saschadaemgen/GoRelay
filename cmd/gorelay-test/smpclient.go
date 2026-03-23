@@ -234,11 +234,16 @@ func (c *SMPClient) SendSEND(senderID [24]byte, privKey ed25519.PrivateKey, msg 
 		return fmt.Errorf("generate corrID: %w", err)
 	}
 
-	// Sign: shortString(sessionID) + corrId + entityId + "SEND " + msg
-	signedData := common.BuildSignedData(c.sessionID, corrID, senderID[:], common.TagSEND, msg)
+	// Wire body: empty flags + SP + message content
+	wireBody := make([]byte, 0, 1+len(msg))
+	wireBody = append(wireBody, 0x20) // empty flags + SP
+	wireBody = append(wireBody, msg...)
+
+	// Sign: shortString(sessionID) + corrId + entityId + "SEND " + wireBody
+	signedData := common.BuildSignedData(c.sessionID, corrID, senderID[:], common.TagSEND, wireBody)
 	sig := ed25519.Sign(privKey, signedData)
 
-	t := common.BuildTransmission(sig, corrID, senderID[:], common.TagSEND, msg)
+	t := common.BuildTransmission(sig, corrID, senderID[:], common.TagSEND, wireBody)
 	block := common.WrapTransmissionBlock(t)
 	if err := c.writeBlock(block); err != nil {
 		return err
