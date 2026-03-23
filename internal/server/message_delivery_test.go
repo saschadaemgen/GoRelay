@@ -125,14 +125,12 @@ func parseMSGResponseEncrypted(t *testing.T, block [common.BlockSize]byte, dhSha
 	}
 	rcvBody := decrypted[2 : 2+rcvLen]
 
-	// rcvMsgBody = timestamp(8) + flags(1) + SP(0x20) + sentBody
-	if len(rcvBody) < 10 {
+	// rcvMsgBody = timestamp(8) + sentBody
+	if len(rcvBody) < 8 {
 		t.Fatalf("rcvMsgBody too short: %d", len(rcvBody))
 	}
 	timestamp = binary.BigEndian.Uint64(rcvBody[0:8])
-	flags = rcvBody[8]
-	// skip SP at rcvBody[9]
-	body = rcvBody[10:]
+	body = rcvBody[8:]
 	return
 }
 

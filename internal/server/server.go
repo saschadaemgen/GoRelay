@@ -1149,7 +1149,7 @@ func (s *Server) encryptMSGBody(recipientID [24]byte, msg *queue.Message) ([]byt
 		"sentBody_len", len(msg.Body),
 	)
 
-	encrypted := smp.EncryptMsgBody(dhKey, msg.ID, msg.Timestamp, msg.Flags, msg.Body)
+	encrypted := smp.EncryptMsgBody(dhKey, msg.ID, msg.Timestamp, msg.Body)
 
 	encN := len(encrypted)
 	if encN > 32 {

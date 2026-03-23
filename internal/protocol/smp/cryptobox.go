@@ -22,22 +22,22 @@ const paddedSize = 2 + MaxMessageLength
 // Wire format per SMP spec:
 //
 //	encryptedRcvMsgBody = simplexCryptoBox(padded(rcvMsgBody))
-//	rcvMsgBody = timestamp(8 bytes BE) + msgFlags(1 byte) + SP(0x20) + sentMsgBody
+//	rcvMsgBody = timestamp(8 bytes BE) + sentMsgBody
+//	sentMsgBody already contains: msgFlags(1 byte) + SP(0x20) + smpEncMessage
 //	padded(data, maxLen) = originalLength(2 bytes BE) + data + zero-fill to maxLen
 //	maxLen = MaxMessageLength + 2 = 16066
 //
-// The nonce is the 24-byte msgId. The key is the precomputed DH shared secret.
+// The nonce is the 24-byte msgId. The key is the raw X25519 DH shared secret.
 // Uses SimpleX custom XSalsa20 nonce splitting (cryptonite library convention).
 //
 // Returns: authTag(16) + ciphertext(16066) = 16082 bytes total.
-func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, flags byte, sentBody []byte) []byte {
-	// Build rcvMsgBody: timestamp(8) + flags(1) + 0x20 + sentBody
-	rcvMsgBody := make([]byte, 0, 8+1+1+len(sentBody))
+func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, sentBody []byte) []byte {
+	// Build rcvMsgBody: timestamp(8) + sentBody
+	// sentBody already includes flags + SP + smpEncMessage from SEND command
+	rcvMsgBody := make([]byte, 0, 8+len(sentBody))
 	ts := make([]byte, 8)
 	binary.BigEndian.PutUint64(ts, timestamp)
 	rcvMsgBody = append(rcvMsgBody, ts...)
-	rcvMsgBody = append(rcvMsgBody, flags)
-	rcvMsgBody = append(rcvMsgBody, 0x20)
 	rcvMsgBody = append(rcvMsgBody, sentBody...)
 
 	slog.Info("DIAG: EncryptMsgBody rcvMsgBody",
