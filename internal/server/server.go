@@ -1168,6 +1168,17 @@ func (s *Server) encryptMSGBody(recipientID [24]byte, msg *queue.Message) ([]byt
 		"encrypted_len", len(encrypted),
 	)
 
+	// DIAG: Verify our own encryption by decrypting
+	decrypted, decOk := smp.SimplexCryptoBoxOpen(dhKey, msg.ID, encrypted)
+	if !decOk {
+		slog.Error("DIAG: SELF-DECRYPT FAILED - our crypto is broken!")
+	} else {
+		slog.Info("DIAG: self-decrypt OK",
+			"decrypted_first16_hex", hex.EncodeToString(decrypted[:min(16, len(decrypted))]),
+			"decrypted_len", len(decrypted),
+		)
+	}
+
 	// Zero the local key copy
 	for i := range dhKey {
 		dhKey[i] = 0
