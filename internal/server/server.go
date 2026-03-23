@@ -799,6 +799,8 @@ func (s *Server) handleSUB(c *Client, cmd common.Command) common.Response {
 				HasEntityID:   true,
 				EntityID:      q.RecipientID,
 				MessageID:     msg.ID,
+				Timestamp:     msg.Timestamp,
+				Flags:         msg.Flags,
 				Body:          encBody,
 			}
 		}
@@ -836,6 +838,8 @@ func (s *Server) handleSUB(c *Client, cmd common.Command) common.Response {
 			HasEntityID:   true,
 			EntityID:      q.RecipientID,
 			MessageID:     msg.ID,
+			Timestamp:     msg.Timestamp,
+			Flags:         msg.Flags,
 			Body:          encBody,
 		}
 	}
@@ -1049,6 +1053,8 @@ func (s *Server) handleSEND(c *Client, cmd common.Command) common.Response {
 						HasEntityID: true,
 						EntityID:    q.RecipientID,
 						MessageID:   msg.ID,
+						Timestamp:   msg.Timestamp,
+						Flags:       msg.Flags,
 						Body:        encBody,
 					},
 				}}
@@ -1112,6 +1118,8 @@ func (s *Server) handleACK(c *Client, cmd common.Command) common.Response {
 					HasEntityID: true,
 					EntityID:    cmd.EntityID,
 					MessageID:   nextMsg.ID,
+					Timestamp:   nextMsg.Timestamp,
+					Flags:       nextMsg.Flags,
 					Body:        encBody,
 				},
 			}}

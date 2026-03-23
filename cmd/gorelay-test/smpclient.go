@@ -330,24 +330,29 @@ func (c *SMPClient) ReadMSG() (msgID [24]byte, timestamp uint64, flags byte, bod
 		err = fmt.Errorf("expected MSG (0x%02x), got 0x%02x", common.CmdMSG, cmd.Type)
 		return
 	}
-	// MSG body: shortString(msgId) + encryptedRcvMsgBody
-	// The body is NaCl secretbox encrypted; timestamp and flags are inside the ciphertext.
+	// MSG body: shortString(msgId) + timestamp(12) + flagsByte(1) + encryptedRcvMsgBody
 	mBody := cmd.Body
 	if len(mBody) < 1 {
 		err = fmt.Errorf("MSG body too short")
 		return
 	}
 	mIDLen := int(mBody[0])
-	if 1+mIDLen > len(mBody) || mIDLen < 24 {
+	if 1+mIDLen+13 > len(mBody) || mIDLen < 24 {
 		err = fmt.Errorf("MSG body invalid: len=%d mIDLen=%d", len(mBody), mIDLen)
 		return
 	}
 	copy(msgID[:], mBody[1:1+24])
-	// Body is the encrypted blob (cannot decrypt without shared key)
-	body = mBody[1+mIDLen:]
-	// timestamp and flags are inside the encrypted body, set to 0
-	timestamp = 0
-	flags = 0
+	off := 1 + mIDLen
+	// Read cleartext timestamp (12 bytes: int64BE seconds + uint32BE nanos)
+	timestamp = binary.BigEndian.Uint64(mBody[off : off+8])
+	off += 12 // skip full 12-byte SystemTime
+	// Read cleartext flags
+	if mBody[off] == 'T' {
+		flags = 1
+	}
+	off++
+	// Body is the encrypted blob
+	body = mBody[off:]
 	return
 }
 

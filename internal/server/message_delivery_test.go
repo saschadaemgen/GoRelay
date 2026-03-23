@@ -104,17 +104,20 @@ func parseMSGResponseEncrypted(t *testing.T, block [common.BlockSize]byte, dhSha
 	if cmd.Type != common.CmdMSG {
 		t.Fatalf("expected MSG (0x%02x), got 0x%02x", common.CmdMSG, cmd.Type)
 	}
-	// MSG wire format: shortString(msgId) + encryptedRcvMsgBody
+	// MSG wire format: shortString(msgId) + timestamp(12) + flagsByte(1) + encryptedRcvMsgBody
 	mBody := cmd.Body
 	if len(mBody) < 1 {
 		t.Fatalf("MSG body too short: %d", len(mBody))
 	}
 	mIDLen := int(mBody[0])
-	if 1+mIDLen > len(mBody) || mIDLen < 24 {
-		t.Fatalf("MSG body too short for msgId: len=%d, mIDLen=%d", len(mBody), mIDLen)
+	if 1+mIDLen+13 > len(mBody) || mIDLen < 24 {
+		t.Fatalf("MSG body too short for msgId+ts+flags: len=%d, mIDLen=%d", len(mBody), mIDLen)
 	}
 	copy(msgID[:], mBody[1:1+24])
-	encrypted := mBody[1+mIDLen:]
+	off := 1 + mIDLen
+	// Skip cleartext timestamp (12 bytes) and flags (1 byte)
+	off += 13
+	encrypted := mBody[off:]
 
 	// Decrypt with SimpleX custom XSalsa20 variant
 	decrypted, ok := smp.SimplexCryptoBoxOpen(dhSharedKey, msgID, encrypted)

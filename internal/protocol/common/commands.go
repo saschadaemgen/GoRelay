@@ -217,8 +217,18 @@ func (r Response) Serialize() []byte {
 		// msgId = shortString(24 bytes)
 		t = append(t, CorrIDSize)
 		t = append(t, r.MessageID[:]...)
+		// Cleartext timestamp as SystemTime: int64BE(seconds) + word32BE(nanoseconds)
+		var tsBuf [12]byte
+		binary.BigEndian.PutUint64(tsBuf[0:8], r.Timestamp)
+		binary.BigEndian.PutUint32(tsBuf[8:12], 0) // nanoseconds = 0
+		t = append(t, tsBuf[:]...)
+		// Cleartext MsgFlags: 'T' for notification, 'F' otherwise
+		if r.Flags != 0 {
+			t = append(t, 'T')
+		} else {
+			t = append(t, 'F')
+		}
 		// Body is the complete encryptedRcvMsgBody (16082 bytes)
-		// containing auth tag + encrypted(padded(timestamp + flags + sentBody))
 		t = append(t, r.Body...)
 	case CmdEND:
 		t = append(t, TagEND...)
