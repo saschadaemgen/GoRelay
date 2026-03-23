@@ -13,12 +13,13 @@ Complete development history of the GoRelay project. Each season represents one 
 |--------|------|-------|--------|
 | [Season 001](2026-03-09-season-001.md) | 2026-03-09 to 2026-03-21 | Research, documentation, server skeleton | Complete |
 | [Season 002](2026-03-22-season-002.md) | 2026-03-21 to 2026-03-22 | Phase 1 implementation, SimpleX compatibility, VPS deployment | Complete |
+| [Season 003](2026-03-23-season-003.md) | 2026-03-22 to 2026-03-23 | NaCl crypto_box, MSG delivery encryption, two clients chatting | Complete |
 
 ## Current Phase
 
 **Phase 1: SMP Skeleton** - Complete (Season 002)
 
-**Phase 2: Extended Operations** - Next
+**Phase 2: Extended Operations** - In Progress (Season 003 completed NaCl crypto_box for MSG delivery)
 
 ## Document Rules
 

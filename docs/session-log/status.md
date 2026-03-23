@@ -5,7 +5,7 @@ sidebar_position: 4
 
 # GoRelay Project Status
 
-**Last updated:** 2026-03-22 (Season 002)
+**Last updated:** 2026-03-23 (Season 003)
 
 ## Current Phase: Phase 2 - Extended Operations
 
@@ -32,21 +32,24 @@ sidebar_position: 4
 - SimpleX Chat server test PASSED (March 22, 2026)
 - VPS deployment (Debian 12, Port 5224)
 
-**Phase 2: Extended Operations** - NEXT
-- OFF command (suspend queue)
-- NKEY/NSUB (notification support)
-- GET command (single message retrieval)
-- NaCl crypto_box for MSG delivery (Layer 3)
-- Connection timeout handling
-- QueueStore cleanup on connection drop
+**Phase 2: Extended Operations** - IN PROGRESS
+- NaCl crypto_box for MSG delivery (Layer 3) - COMPLETE (Season 003)
+- Two SimpleX clients chatting over GoRelay - COMPLETE (Season 003)
+- PRXY command handling (returns ERR PROHIBITED) - COMPLETE (Season 003)
+- Unsigned SEND for confirmation messages - COMPLETE (Season 003)
+- Graceful shutdown with 10-second timeout - COMPLETE (Season 003)
+- OFF command (suspend queue) - PLANNED
+- NKEY/NSUB (notification support) - PLANNED
+- GET command (single message retrieval) - PLANNED
+- Connection timeout handling - PLANNED
+- Rate limiting (golang.org/x/time/rate) - PLANNED
 
 **Phase 3: Production Readiness** - PLANNED
 - Docker image and docker-compose.yml
 - systemd unit file
 - Prometheus metrics endpoint
-- Rate limiting (golang.org/x/time/rate)
-- Graceful shutdown with timeout
-- Debug logging removal
+- Debug logging cleanup
+- Version tagging
 
 **Phase 4: GRP Protocol** - PLANNED
 - Noise Protocol transport (flynn/noise)
@@ -67,8 +70,20 @@ sidebar_position: 4
 - SMP Port: 5224 (official SMP server on 5223)
 - GRP Port: 7443
 - Admin: localhost:9090
-- SimpleX Test: PASSED
+- SimpleX Server Test: PASSED (Season 002)
+- Two-Client Chat Test: PASSED (Season 003)
 - Binary: ~15 MB, 608 KB heap idle
+
+---
+
+### Milestone Timeline
+
+| Date | Milestone |
+|------|-----------|
+| 2026-03-09 | Project started, research phase |
+| 2026-03-21 | 40 documentation pages complete, server skeleton compiled |
+| 2026-03-22 | SimpleX server test PASSED, VPS deployed |
+| 2026-03-23 | **Two SimpleX clients chatting over GoRelay** |
 
 ---
 

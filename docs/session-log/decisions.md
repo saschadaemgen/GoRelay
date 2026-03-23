@@ -146,4 +146,53 @@ All significant technical decisions with rationale and alternatives considered. 
 
 ---
 
+## ADR-013: Server MSG Encryption - Standard NaCl Secretbox
+
+**Date:** 2026-03-23 (Season 003)
+**Status:** Accepted (after 14 iterations)
+
+**Decision:** Layer 3 (server-to-recipient) MSG encryption uses standard NaCl `crypto_box_afternm` equivalent: `HSalsa20(raw_ecdh_key, zeros)` for key derivation, then `secretbox.Seal` for XSalsa20-Poly1305 encryption.
+
+**Rationale:** The Haskell SMP server's `cbEncrypt` function uses `crypto_box_afternm` which is standard NaCl. A custom XSalsa20 variant with non-standard nonce splitting (from Haskell's cryptonite library) was initially implemented based on SimpleGo documentation, but this variant is used only for Layer 2 (client-to-client E2E), not Layer 3 (server-to-recipient). A comparison test confirmed the custom approach produces different ciphertext than standard NaCl. Switching to `golang.org/x/crypto/nacl/secretbox` resolved the issue immediately.
+
+**Alternatives tested:**
+- Custom 3-step HSalsa20 with cryptonite nonce splitting (wrong layer)
+- Direct secretbox with raw DH key (no beforenm derivation)
+- box.Precompute + secretbox (equivalent to chosen approach but uses deprecated API)
+
+---
+
+## ADR-014: DH Key Derivation for MSG Encryption
+
+**Date:** 2026-03-23 (Season 003)
+**Status:** Accepted
+
+**Decision:** Store raw X25519 ECDH output as ServerDHSecret, then derive beforenm key with `HSalsa20(raw_ecdh, zeros)` at encryption time.
+
+**Rationale:** The raw ECDH output is the correct input for `crypto_box_beforenm`. Using `box.Precompute` directly on the raw ECDH output would double-apply the HSalsa20 derivation. Confirmed by SimpleGo documentation: "rcvDhSecret = crypto_scalarmult (raw X25519 DH output). NOT crypto_box_beforenm."
+
+---
+
+## ADR-015: MaxRcvMessageLen and Padded Size
+
+**Date:** 2026-03-23 (Season 003)
+**Status:** Accepted
+
+**Decision:** MaxRcvMessageLen = 16104 bytes. Padded size = 16106 bytes (2-byte uint16BE length prefix + 16104 content). Encrypted output = 16122 bytes (16-byte Poly1305 MAC + 16106 ciphertext). Padding character is '#' (0x23).
+
+**Rationale:** Confirmed from Haskell Protocol.hs source code and SimpleGo verified hex dumps. The SMP specification's `maxMessageLength = 16064` refers to the maximum sentMsgBody size, not the maximum rcvMsgBody size. The rcvMsgBody adds 8 bytes timestamp + 1 byte flags + 1 byte space = 10 bytes overhead, but MaxRcvMessageLen accounts for additional protocol envelope space.
+
+---
+
+## ADR-016: rcvMsgBody Encoding
+
+**Date:** 2026-03-23 (Season 003)
+**Status:** Accepted
+
+**Decision:** rcvMsgBody = timestamp(8 bytes Int64 BE) + sentBody(raw passthrough). The sentBody from the SEND command already contains the flags ASCII character, space separator, and smpEncMessage in the correct format.
+
+**Rationale:** Confirmed by both Haskell source (encodeRcvMsgBody uses smpEncode for timestamp and flags, then appends msgBody directly) and SimpleGo hex dumps showing the exact byte layout. No additional parsing or transformation of sentBody is needed.
+
+---
+
 *GoRelay - IT and More Systems, Recklinghausen*
