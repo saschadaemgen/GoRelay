@@ -2,8 +2,6 @@ package smp
 
 import (
 	"encoding/binary"
-	"encoding/hex"
-	"log/slog"
 
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/crypto/salsa20/salsa"
@@ -39,10 +37,6 @@ func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, sent
 	rcvMsgBody = append(rcvMsgBody, ts...)
 	rcvMsgBody = append(rcvMsgBody, sentBody...)
 
-	slog.Info("DIAG: EncryptMsgBody rcvMsgBody",
-		"rcvMsgBody_len", len(rcvMsgBody),
-	)
-
 	// Build padded: uint16BE(len(rcvMsgBody)) + rcvMsgBody + '#'-fill to paddedSize
 	padded := make([]byte, paddedSize)
 	binary.BigEndian.PutUint16(padded[0:2], uint16(len(rcvMsgBody)))
@@ -52,16 +46,7 @@ func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, sent
 		padded[i] = '#'
 	}
 
-	n := len(padded)
-	if n > 32 {
-		n = 32
-	}
-	slog.Info("DIAG: EncryptMsgBody padded plaintext",
-		"padded_first32_hex", hex.EncodeToString(padded[:n]),
-		"padded_len", len(padded),
-	)
-
-	// Encrypt with SimpleX custom XSalsa20 variant
+	// Encrypt with NaCl crypto_box (beforenm + secretbox)
 	out := simplexCryptoBox(dhSharedKey, msgId, padded)
 
 	return out

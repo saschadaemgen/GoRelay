@@ -1143,41 +1143,7 @@ func (s *Server) encryptMSGBody(recipientID [24]byte, msg *queue.Message) ([]byt
 	var dhKey [32]byte
 	copy(dhKey[:], q.ServerDHSecret)
 
-	bodyN := len(msg.Body)
-	if bodyN > 32 {
-		bodyN = 32
-	}
-	slog.Info("DIAG: encryptMSGBody before encrypt",
-		"dhSecret_first16_hex", hex.EncodeToString(q.ServerDHSecret[:16]),
-		"dhSecret_len", len(q.ServerDHSecret),
-		"msgId_hex", hex.EncodeToString(msg.ID[:]),
-		"timestamp", msg.Timestamp,
-		"flags", fmt.Sprintf("0x%02x", msg.Flags),
-		"sentBody_first32_hex", hex.EncodeToString(msg.Body[:bodyN]),
-		"sentBody_len", len(msg.Body),
-	)
-
 	encrypted := smp.EncryptMsgBody(dhKey, msg.ID, msg.Timestamp, msg.Body)
-
-	encN := len(encrypted)
-	if encN > 32 {
-		encN = 32
-	}
-	slog.Info("DIAG: encryptMSGBody after encrypt",
-		"encrypted_first32_hex", hex.EncodeToString(encrypted[:encN]),
-		"encrypted_len", len(encrypted),
-	)
-
-	// DIAG: Verify our own encryption by decrypting
-	decrypted, decOk := smp.SimplexCryptoBoxOpen(dhKey, msg.ID, encrypted)
-	if !decOk {
-		slog.Error("DIAG: SELF-DECRYPT FAILED - our crypto is broken!")
-	} else {
-		slog.Info("DIAG: self-decrypt OK",
-			"decrypted_first16_hex", hex.EncodeToString(decrypted[:min(16, len(decrypted))]),
-			"decrypted_len", len(decrypted),
-		)
-	}
 
 	// Zero the local key copy
 	for i := range dhKey {
