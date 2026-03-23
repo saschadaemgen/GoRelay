@@ -135,9 +135,9 @@ func TestFullTestSubcommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read MSG: %v", err)
 	}
-	// Body is encrypted (16082 bytes: 16 tag + 16066 padded ciphertext)
-	if len(body) != 16082 {
-		t.Fatalf("MSG encrypted body length: got %d, want 16082", len(body))
+	// Body is encrypted (16122 bytes: 16 tag + 16106 padded ciphertext)
+	if len(body) != 16122 {
+		t.Fatalf("MSG encrypted body length: got %d, want 16122", len(body))
 	}
 
 	// Step 5: ACK

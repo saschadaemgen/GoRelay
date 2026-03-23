@@ -104,20 +104,17 @@ func parseMSGResponseEncrypted(t *testing.T, block [common.BlockSize]byte, dhSha
 	if cmd.Type != common.CmdMSG {
 		t.Fatalf("expected MSG (0x%02x), got 0x%02x", common.CmdMSG, cmd.Type)
 	}
-	// MSG wire format: shortString(msgId) + timestamp(12) + flagsByte(1) + encryptedRcvMsgBody
+	// MSG wire format: shortString(msgId) + encryptedRcvMsgBody
 	mBody := cmd.Body
 	if len(mBody) < 1 {
 		t.Fatalf("MSG body too short: %d", len(mBody))
 	}
 	mIDLen := int(mBody[0])
-	if 1+mIDLen+13 > len(mBody) || mIDLen < 24 {
-		t.Fatalf("MSG body too short for msgId+ts+flags: len=%d, mIDLen=%d", len(mBody), mIDLen)
+	if 1+mIDLen > len(mBody) || mIDLen < 24 {
+		t.Fatalf("MSG body too short for msgId: len=%d, mIDLen=%d", len(mBody), mIDLen)
 	}
 	copy(msgID[:], mBody[1:1+24])
-	off := 1 + mIDLen
-	// Skip cleartext timestamp (12 bytes) and flags (1 byte)
-	off += 13
-	encrypted := mBody[off:]
+	encrypted := mBody[1+mIDLen:]
 
 	// Decrypt with SimpleX custom XSalsa20 variant
 	decrypted, ok := smp.SimplexCryptoBoxOpen(dhSharedKey, msgID, encrypted)
@@ -125,7 +122,7 @@ func parseMSGResponseEncrypted(t *testing.T, block [common.BlockSize]byte, dhSha
 		t.Fatalf("SimplexCryptoBoxOpen failed on MSG body (encrypted len=%d)", len(encrypted))
 	}
 
-	// Decrypted is padded: uint16BE(rcvMsgBodyLen) + rcvMsgBody + zero padding
+	// Decrypted is padded: uint16BE(rcvMsgBodyLen) + rcvMsgBody + '#' padding
 	if len(decrypted) < 2 {
 		t.Fatalf("decrypted MSG too short: %d", len(decrypted))
 	}
@@ -135,15 +132,19 @@ func parseMSGResponseEncrypted(t *testing.T, block [common.BlockSize]byte, dhSha
 	}
 	rcvBody := decrypted[2 : 2+rcvLen]
 
-	// rcvMsgBody = timestamp(12) + flagsByte(1) + uint16BE(2) + smpEncMessage
-	if len(rcvBody) < 15 {
+	// rcvMsgBody = timestamp(8) + sentBody(raw)
+	// sentBody = flagsASCII + SP(0x20) + smpEncMessage
+	if len(rcvBody) < 8 {
 		t.Fatalf("rcvMsgBody too short: %d", len(rcvBody))
 	}
 	timestamp = binary.BigEndian.Uint64(rcvBody[0:8])
-	// skip nanoseconds at rcvBody[8:12]
-	flags = rcvBody[12]
-	// skip uint16BE length prefix at rcvBody[13:15]
-	body = rcvBody[15:]
+	sentBody := rcvBody[8:]
+	// Strip flags+SP prefix to return just the message content
+	if spIdx := bytes.IndexByte(sentBody, 0x20); spIdx >= 0 {
+		body = sentBody[spIdx+1:]
+	} else {
+		body = sentBody
+	}
 	return
 }
 
