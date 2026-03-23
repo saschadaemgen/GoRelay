@@ -71,9 +71,9 @@ func TestEncryptMsgBodyDecryptRoundtrip(t *testing.T) {
 		t.Fatalf("timestamp: got %d, want %d", gotTS, timestamp)
 	}
 
-	// Verify flagsByte is 0x01 (from "T")
-	if decrypted[10] != 0x01 {
-		t.Fatalf("flagsByte: got 0x%02x, want 0x01", decrypted[10])
+	// Verify flagsByte is 'T' (0x54) from "T" flag
+	if decrypted[10] != 'T' {
+		t.Fatalf("flagsByte: got 0x%02x, want 0x54 ('T')", decrypted[10])
 	}
 
 	// Verify message content starts at offset 11
@@ -111,9 +111,9 @@ func TestEncryptMsgBodyNoFlags(t *testing.T) {
 		t.Fatal("SimplexCryptoBoxOpen failed")
 	}
 
-	// flagsByte should be 0x00 (empty flags string)
-	if decrypted[10] != 0x00 {
-		t.Fatalf("flagsByte: got 0x%02x, want 0x00", decrypted[10])
+	// flagsByte should be 'F' (0x46) for empty flags string
+	if decrypted[10] != 'F' {
+		t.Fatalf("flagsByte: got 0x%02x, want 0x46 ('F')", decrypted[10])
 	}
 
 	// Verify content

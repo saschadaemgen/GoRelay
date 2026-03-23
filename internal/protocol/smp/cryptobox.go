@@ -37,13 +37,13 @@ func EncryptMsgBody(dhSharedKey [32]byte, msgId [24]byte, timestamp uint64, sent
 	// sentBody wire format: flagsASCII + SP(0x20) + smpEncMessage
 	// flagsASCII is "T" (notification) or empty ""
 	// rcvMsgBody format: timestamp(8) + flagsByte(1) + smpEncMessage
-	var flagsByte byte
+	var flagsByte byte = 'F'
 	var smpEncMessage []byte
 	if spIdx := bytes.IndexByte(sentBody, 0x20); spIdx >= 0 {
 		flagsStr := sentBody[:spIdx]
 		smpEncMessage = sentBody[spIdx+1:]
 		if bytes.Equal(flagsStr, []byte("T")) {
-			flagsByte = 0x01 // notification flag
+			flagsByte = 'T' // notification flag (ASCII 0x54)
 		}
 	} else {
 		// No SP found - treat entire sentBody as smpEncMessage
